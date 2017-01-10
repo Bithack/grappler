@@ -1,0 +1,7 @@
+.DS_Store
+bin/
+data/
+src/github.com/
+src/golang.org/
+src/gopkg.in/
+src/sourcegraph.com/
