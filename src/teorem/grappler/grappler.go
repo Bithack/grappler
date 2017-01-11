@@ -1,22 +1,21 @@
 package main
 
 import (
-	"bytes"
-	"io/ioutil"
-	"reflect"
-	"strconv"
-	"teorem/anydb"
-
 	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
+
+	"teorem/anydb"
 	"teorem/grappler/caffe"
+	"teorem/tinyprompt"
 
 	"github.com/golang/protobuf/proto"
 	"github.com/gonum/matrix/mat64"
-	"github.com/pkg/term"
 )
 
 func panicOnError(err error) {
@@ -33,19 +32,6 @@ func contains(list interface{}, elem interface{}) bool {
 		}
 	}
 	return false
-}
-
-func getch() []byte {
-	t, _ := term.Open("/dev/tty")
-	term.RawMode(t)
-	bytes := make([]byte, 4)
-	numRead, err := t.Read(bytes)
-	t.Restore()
-	t.Close()
-	if err != nil {
-		return nil
-	}
-	return bytes[0:numRead]
 }
 
 type dbInfo struct {
@@ -69,9 +55,6 @@ var lastKey []byte
 var lastValue []byte
 var lastFloats []float32
 
-var history []string
-var historyScan = -1
-
 var matrixes = make(map[string]*mat64.Dense)
 
 func main() {
@@ -90,68 +73,13 @@ func main() {
 	fmt.Printf("Interactive mode. Type \"help\" for commands.\n")
 loop:
 	for {
-		fmt.Print("> ")
-
-		text := ""
-	line_reader:
-		for {
-			c := getch()
-			switch {
-			case bytes.Equal(c, []byte{27, 91, 68}): // left
-			case bytes.Equal(c, []byte{27, 91, 67}): // right
-			case bytes.Equal(c, []byte{27, 91, 65}): // up
-				if len(history) > 0 && historyScan > 0 {
-					historyScan = historyScan - 1
-					text = history[historyScan]
-					fmt.Printf("\r> %s", text)
-				}
-
-			case bytes.Equal(c, []byte{27, 91, 66}): // down
-				if len(history) > 0 && historyScan < len(history)-1 {
-					historyScan = historyScan + 1
-					text = history[historyScan]
-					fmt.Printf("\r> %s", text+strings.Repeat(" ", 20)+strings.Repeat("\b", 20))
-				}
-
-			case bytes.Equal(c, []byte{13}): // enter
-				fmt.Printf("\n")
-				break line_reader
-
-			case bytes.Equal(c, []byte{9}): // tab
-
-			case bytes.Equal(c, []byte{127}): // backspace
-				if len(text) > 0 {
-					text = text[:len(text)-1]
-					//fmt.Printf("\b ")
-					fmt.Printf("\r> %v \b", text)
-				}
-				//fmt.Printf(chr(8) . " ";
-				//fmt.Printf("\r> %v", text)
-
-			default:
-				//fmt.Printf("Key: %v", c)
-				if len(c) == 1 {
-					fmt.Printf("%c", c[0])
-					text = text + string(c)
-				}
-			}
-		}
-
-		//text, _ = reader.ReadString('\n')
-		//text = strings.TrimSuffix(text, "\n")
-
-		history = append(history, text)
-		historyScan = len(history) - 1
+		text := tinyprompt.GetCommand()
 
 		parts := strings.Split(text, " ")
 		switch parts[0] {
 
-		case "d", "data":
-
 		case "history":
-			for _, cmd := range history {
-				fmt.Printf("%v\n", cmd)
-			}
+			tinyprompt.PrintHistory()
 
 		case "f", "floats":
 			if len(lastFloats) > 0 {
@@ -202,21 +130,28 @@ loop:
 		case "pca":
 
 		case "load":
-			if len(parts) != 4 {
-				fmt.Printf("usage: load <field> into <object>\n")
+			if len(parts) != 4 && len(parts) != 2 {
+				fmt.Printf("usage: load <field> [into <object>] \n")
 				break
 			}
 			if len(selectedDBs) > 1 {
 				fmt.Printf("currently only supports loading from one db, select one with \"use\"\n")
 				break
 			}
-			//check if object exists
-			_, ok := matrixes[parts[3]]
-			if !ok {
-				fmt.Printf("no such object. Use \"create\" first\n")
-			}
 
-			dest := matrixes[parts[3]]
+			var mat string
+			if len(parts) == 2 {
+				mat = "data"
+			} else {
+				mat = parts[3]
+			}
+			//check if object exists
+			_, ok := matrixes[mat]
+			if !ok {
+				a := mat64.NewDense(0, 0, nil)
+				matrixes[mat] = a
+				//fmt.Printf("no such object. Use \"create\" first\n")
+			}
 			destReady := false
 
 			selectedDBs[0].Release()
@@ -250,12 +185,12 @@ loop:
 						f64[i] = float64(v)
 					}
 					if !destReady {
-						dest = dest.Grow(int(max), len(floats))
+						matrixes[mat] = matrixes[mat].Grow(int(max), len(floats)).(*mat64.Dense)
 						destReady = true
 					}
-					i, j := dest.Dims()
-					fmt.Printf("Row: %v, %v %v\n", int(count)+1, i, j)
-					dest.SetRow(int(count)+1, f64)
+					//i, j := matrixes[mat].Dims()
+					//fmt.Printf("Row: %v, %v %v\n", int(count)+1, i, j)
+					matrixes[mat].SetRow(int(count), f64)
 
 				}
 
@@ -274,10 +209,6 @@ loop:
 		case "create", "make":
 			if len(parts) != 3 {
 				fmt.Printf("usage: create <object> <name>\n")
-				break
-			}
-			if len(selectedDBs) > 1 {
-				fmt.Printf("currently only supports writing from one db\n")
 				break
 			}
 			switch parts[1] {
@@ -422,7 +353,7 @@ loop:
 			//stat.Bhattacharyya
 		case "write":
 			if len(parts) < 4 {
-				fmt.Printf("usage: write <field> to <filename>\n")
+				fmt.Printf("usage: write <variable> to <filename>\n")
 				break
 			}
 			if len(selectedDBs) > 1 {
@@ -552,15 +483,25 @@ loop:
 			open(parts[1])
 
 		case "":
-			break
+
+		case "who", "whos":
+			if len(matrixes) == 0 {
+				fmt.Printf("No variables yet\n")
+				break
+			}
+			for m := range matrixes {
+				r, c := matrixes[m].Dims()
+
+				fmt.Printf("%s"+strings.Repeat(" ", 10-len(m))+"Dims(%v, %v)\n", m, r, c)
+			}
 
 		default:
-			//check if it is the name of an matrix
-			_, ok := matrixes[parts[0]]
-			if ok {
-				printMatrix(parts[0])
+			ans, err := parseExpression(text)
+			if err != nil {
+				fmt.Printf("%v\n", err)
 			} else {
-				fmt.Printf("Unknown command or object\n")
+				matrixes["ans"] = ans
+				printMatrix("ans")
 			}
 
 		}
@@ -568,11 +509,6 @@ loop:
 	if myDB != nil {
 		myDB.Close()
 	}
-}
-
-func printMatrix(mat string) {
-	fa := mat64.Formatted(matrixes[mat], mat64.Prefix("    "))
-	fmt.Printf("%s =\n%v\n", mat, fa)
 }
 
 func open(path string) {

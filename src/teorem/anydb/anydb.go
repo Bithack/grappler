@@ -1,7 +1,7 @@
 /*
 Package anydb provides a common lib agains different key-value storage
 Currently supported: lmdb, leveldb
-To be supported: bolt
+Might be supported in the future: bolt, aerospike
 */
 package anydb
 
