@@ -12,6 +12,7 @@ import (
 
 	"teorem/anydb"
 	"teorem/grappler/caffe"
+	"teorem/matchar"
 	"teorem/tinyprompt"
 
 	"github.com/golang/protobuf/proto"
@@ -56,8 +57,12 @@ var lastValue []byte
 var lastFloats []float32
 
 var matrixes = make(map[string]*mat64.Dense)
+var matrixesChar = make(map[string]*matchar.Matchar)
 
 func main() {
+
+	a := matchar.NewMatchar([]string{"hej", "hopp", "lingon"})
+	matrixesChar["str"] = a
 
 	//reader := bufio.NewReader(os.Stdin)
 
@@ -71,20 +76,17 @@ func main() {
 	}
 
 	fmt.Printf("Interactive mode. Type \"help\" for commands.\n")
+
 loop:
 	for {
 		text := tinyprompt.GetCommand()
 
 		parts := strings.Split(text, " ")
+	switcher:
 		switch parts[0] {
 
 		case "history":
 			tinyprompt.PrintHistory()
-
-		case "f", "floats":
-			if len(lastFloats) > 0 {
-				fmt.Printf("%v", lastFloats)
-			}
 
 		case "g", "get":
 			if len(parts) != 2 {
@@ -131,7 +133,7 @@ loop:
 
 		case "load":
 			if len(parts) != 4 && len(parts) != 2 {
-				fmt.Printf("usage: load <field> [into <object>] \n")
+				fmt.Printf("usage: load <field> [to <object>] \n")
 				break
 			}
 			if len(selectedDBs) > 1 {
@@ -141,16 +143,27 @@ loop:
 
 			var mat string
 			if len(parts) == 2 {
-				mat = "data"
+				mat = parts[1]
 			} else {
 				mat = parts[3]
 			}
-			//check if object exists
-			_, ok := matrixes[mat]
-			if !ok {
-				a := mat64.NewDense(0, 0, nil)
-				matrixes[mat] = a
-				//fmt.Printf("no such object. Use \"create\" first\n")
+
+			//check if object exists, if not create it
+			switch parts[1] {
+			case "keys":
+				_, ok := matrixesChar[mat]
+				if !ok {
+					a := matchar.NewMatchar(nil)
+					matrixesChar[mat] = a
+				} else {
+					matrixesChar[mat].Reset()
+				}
+			case "floats", "floatdata":
+				_, ok := matrixes[mat]
+				if !ok {
+					a := mat64.NewDense(0, 0, nil)
+					matrixes[mat] = a
+				}
 			}
 			destReady := false
 
@@ -171,6 +184,10 @@ loop:
 				}
 
 				switch parts[1] {
+				case "keys":
+					key := selectedDBs[0].Key()
+					matrixesChar[mat].Append(string(key))
+
 				case "floats", "floatdata":
 					value := selectedDBs[0].Value()
 					d := &caffe.Datum{}
@@ -352,12 +369,9 @@ loop:
 
 			//stat.Bhattacharyya
 		case "write":
+
 			if len(parts) < 4 {
-				fmt.Printf("usage: write <variable> to <filename>\n")
-				break
-			}
-			if len(selectedDBs) > 1 {
-				fmt.Printf("currently only supports writing from one db\n")
+				fmt.Printf("usage: write <variable>[,<variable>] to <filename>\n")
 				break
 			}
 
@@ -366,60 +380,55 @@ loop:
 				fmt.Printf("couldn't create file %s\n", parts[3])
 				break
 			}
-			defer f.Close()
-
-			selectedDBs[0].Release()
-			selectedDBs[0].Scan()
-			count := 0
-			var max int
-			if limit != 0 {
-				max = int(limit)
-			} else {
-				max = 9999999
+			//check vars and that the row dimensions match
+			vars := strings.Split(parts[1], ",")
+			var lastr = 0
+			for _, v := range vars {
+				var matFloat *mat64.Dense
+				var matChar *matchar.Matchar
+				// is it float64 or char?
+				matFloat, isfloat := matrixes[v]
+				matChar, ischar := matrixesChar[v]
+				if !(isfloat || ischar) {
+					fmt.Printf("no such variable: %s\n", v)
+					break switcher
+				}
+				var r int
+				if isfloat {
+					r, _ = matFloat.Dims()
+				} else {
+					r, _ = matChar.Dims()
+				}
+				if lastr != 0 && lastr != r {
+					fmt.Printf("matrix dimensions doesn't match\n")
+					break switcher
+				}
+				lastr = r
 			}
 
-		write_loop:
-			for {
-				for _, db := range selectedDBs {
-					if !db.Next() {
-						break write_loop
+			//write loop
+			for i := 0; i < lastr; i++ {
+				first := true
+				for _, v := range vars {
+					if !first {
+						f.WriteString(" ")
 					}
-
-					switch parts[1] {
-					case "floats", "floatdata":
-						value := db.Value()
-						d := &caffe.Datum{}
-						err = proto.Unmarshal(value, d)
-						if err != nil {
-							fmt.Printf("unmarshaling error\n")
-							break
-						}
-						floats := d.GetFloatData()
-						s := fmt.Sprintf("%v\n", floats)
-						// skip [ and ]
-						_, err := f.WriteString(s[1 : len(s)-2])
-
-						if err != nil {
-							fmt.Printf("couldn't write string\n")
-						}
-
-					case "key":
-						key := db.Key()
-						_, err = f.WriteString(fmt.Sprintf("%s\n", string(key)))
-
+					matFloat, isfloat := matrixes[v]
+					matChar, ischar := matrixesChar[v]
+					if isfloat {
+						floats := matFloat.RawRowView(i)
+						s := fmt.Sprintf("%v", floats)
+						f.WriteString(s[1 : len(s)-2])
 					}
+					if ischar {
+						f.WriteString(fmt.Sprintf("%s", matChar.RowView(i)))
+					}
+					first = false
 				}
-				count++
-				if count%5000 == 0 {
-					fmt.Printf("%v records written\n", count)
-				}
-				if count >= max {
-					break write_loop
-				}
+				f.WriteString("\n")
 			}
-			if count%5000 != 0 {
-				fmt.Printf("%v records written\n", count)
-			}
+			f.Close()
+			fmt.Printf("%v records written\n", lastr)
 
 		case "db", "dbs", "use":
 
@@ -485,23 +494,33 @@ loop:
 		case "":
 
 		case "who", "whos":
-			if len(matrixes) == 0 {
+			if len(matrixes) == 0 && len(matrixesChar) == 0 {
 				fmt.Printf("No variables yet\n")
 				break
 			}
 			for m := range matrixes {
 				r, c := matrixes[m].Dims()
-
-				fmt.Printf("%s"+strings.Repeat(" ", 10-len(m))+"Dims(%v, %v)\n", m, r, c)
+				fmt.Printf("%s"+strings.Repeat(" ", 10-len(m))+"Float64      Dims(%v, %v)\n", m, r, c)
+			}
+			for m := range matrixesChar {
+				r, c := matrixesChar[m].Dims()
+				fmt.Printf("%s"+strings.Repeat(" ", 10-len(m))+"Char         Dims(%v, %v)\n", m, r, c)
 			}
 
 		default:
+			//parseExpression only works with float64 matrixes
 			ans, err := parseExpression(text)
-			if err != nil {
-				fmt.Printf("%v\n", err)
-			} else {
+			if err == nil {
 				matrixes["ans"] = ans
 				printMatrix("ans")
+			} else {
+				//check if its a char matrix
+				_, ok := matrixesChar[text]
+				if ok {
+					printCharMatrix(text)
+				} else {
+					fmt.Printf("%v\n", err)
+				}
 			}
 
 		}
@@ -528,7 +547,7 @@ func open(path string) {
 	myDB.Scan()
 
 	allDBs = append(allDBs, myDB)
-	selectedDBs = append(selectedDBs, myDB)
+	selectedDBs = []*anydb.ADB{myDB}
 
 	var d dbInfo
 	dbInfos = append(dbInfos, d)

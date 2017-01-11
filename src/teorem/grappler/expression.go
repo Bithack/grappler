@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bufio"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
+	"os"
+	"os/exec"
 	"strings"
 
 	"strconv"
@@ -12,7 +16,7 @@ import (
 	"github.com/gonum/stat"
 )
 
-var functions = []string{"pca", "mean", "max", "min", "mul"}
+var functions = []string{"pca", "mean", "max", "min", "mul", "size", "bh_tsne"}
 
 func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 
@@ -25,6 +29,72 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 		}
 	}
 	switch f {
+
+	case "bh_tsne":
+		//bh_tsne(data, no_dims, theta, perplexity)
+		//
+		//bh_tsne binary reads from "data.dat"
+		//Binary format: n (int32), d (int32), theta (float64), perplexity (float64), dims (int32), data ([]float64)
+		if len(argv2) != 4 {
+			return nil, errors.New("usage: bh_tsne(data, no_dims, theta, perplexity)")
+		}
+		f, err := os.Create("data.dat")
+		if err != nil {
+			return nil, errors.New("couldn't create data file in bh_tsne")
+		}
+		r, c := argv2[0].Dims()
+
+		f.Write(int32bytes(r))                                  // number of data
+		f.Write(int32bytes(c))                                  // input dimensions
+		f.Write(float64bytes(argv2[2].At(0, 0)))                // theta
+		f.Write(float64bytes(argv2[3].At(0, 0)))                // perplexity
+		f.Write(int32bytes(int(math.Floor(argv2[1].At(0, 0))))) // output dimensions
+		f.Write(int32bytes(1000))                               // max iterations
+		l := len(argv2[0].RawMatrix().Data)
+		for i := 0; i < l; i++ {
+			f.Write(float64bytes(argv2[0].RawMatrix().Data[i]))
+		}
+		f.Close()
+
+		result = mat64.NewDense(1, 1, nil)
+
+		cmd := exec.Command("bh_tsne")
+		outpipe, err := cmd.StdoutPipe()
+		if err != nil {
+			return nil, errors.New("could not open stdoutpipe for binary bh_tsne")
+		}
+		err = cmd.Start()
+		if err != nil {
+			return nil, errors.New("could not start binary bh_tsne from bh_tsne()")
+		}
+		scanner := bufio.NewScanner(outpipe)
+		for scanner.Scan() {
+			fmt.Printf("%s\n", scanner.Text())
+		}
+		err = cmd.Wait()
+
+		//read the results from result.dat
+		//n (int32), d (int32), data ([]float64), landmarks ([]int32), costs ([]float64)
+		f, err = os.Open("result.dat")
+		if err != nil {
+			return nil, errors.New("couldn't open result data file in bh_tsne")
+		}
+		n := readInt32(f)
+		d := readInt32(f)
+		data := make([]float64, n*d)
+		for i := range data {
+			data[i] = readFloat64(f)
+		}
+		f.Close()
+		result = mat64.NewDense(n, d, data)
+		matrixes["tsne"] = result
+
+	case "size":
+		if len(argv2) != 1 {
+			return nil, errors.New("expected one arguments to size(X)")
+		}
+		r, c := argv2[0].Dims()
+		result = mat64.NewDense(1, 2, []float64{float64(r), float64(c)})
 
 	case "mul":
 		var a = argv2[0]
@@ -53,8 +123,8 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 			return nil, errors.New("internal error in pca()")
 		}
 		//vecs should now be a matrix of size D x D
-		r2, c2 := vecs.Dims()
-		fmt.Printf("Vecs has dimensions %v, %v\n", r2, c2)
+		r2, _ := vecs.Dims()
+		//fmt.Printf("Vecs has dimensions %v, %v\n", r2, c2)
 
 		//save variances as a row vector
 		v := mat64.NewDense(1, len(vars), vars)
@@ -63,6 +133,7 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 		//project data
 		var a mat64.Dense
 		a.Mul(argv2[0], vecs.View(0, 0, r2, k))
+		matrixes["proj"] = &a
 		result = &a
 
 		//fmt.Printf("variances = %.4f\n\n", vars)
@@ -131,13 +202,13 @@ func parseExpression(expr string) (result *mat64.Dense, err error) {
 
 	//transpose
 	transpose := false
-	if expr[len(expr)-1:] == "'" {
+	if len(expr) > 1 && expr[len(expr)-1:] == "'" {
 		expr = expr[:len(expr)-1]
 		//fmt.Printf("test: %v", expr[len(expr)-1:])
 		transpose = true
 	}
 
-	//check if it is the name of an matrix
+	//check if it is the name of an float matrix
 	_, ok := matrixes[expr]
 	if ok {
 		if transpose {
@@ -161,5 +232,43 @@ func printMatrix(mat string) {
 		///mat64.Format(matrixes[mat], )
 		fmt.Printf("%s =\n%.4f\n", mat, fa)
 	}
+}
 
+func printCharMatrix(mat string) {
+	r, c := matrixesChar[mat].Dims()
+	switch {
+	case r == 0 && c == 0:
+		fmt.Printf("%s = []\n", mat)
+	default:
+		fmt.Printf("%s =\n", mat)
+		for i := 0; i < r; i++ {
+			fmt.Printf("%s\n", matrixesChar[mat].RowView(i))
+		}
+		//fmt.Printf("%s =\n%.4f\n", mat, fa)
+	}
+}
+
+func readInt32(f *os.File) int {
+	bs := make([]byte, 4)
+	f.Read(bs)
+	return int(binary.LittleEndian.Uint32(bs))
+}
+
+func readFloat64(f *os.File) float64 {
+	bs := make([]byte, 8)
+	f.Read(bs)
+	return math.Float64frombits(binary.LittleEndian.Uint64(bs))
+}
+
+func int32bytes(i int) (bs []byte) {
+	bs = make([]byte, 4)
+	binary.LittleEndian.PutUint32(bs, uint32(i))
+	return
+}
+
+func float64bytes(float float64) (bs []byte) {
+	bits := math.Float64bits(float)
+	bs = make([]byte, 8)
+	binary.LittleEndian.PutUint64(bs, bits)
+	return
 }

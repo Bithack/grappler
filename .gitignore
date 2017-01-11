@@ -1,7 +1,9 @@
 .DS_Store
 bin/
 data/
+pkg/
 src/github.com/
 src/golang.org/
 src/gopkg.in/
 src/sourcegraph.com/
+*.txt
