@@ -118,7 +118,13 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 		k := int(math.Floor(argv2[1].At(0, 0)))
 
 		//PCA wants observations in rows, variables in columns!
-		vecs, vars, ok := stat.PrincipalComponents(argv2[0], nil)
+
+		var pc stat.PC
+		var vecs *mat64.Dense
+		var vars []float64
+		ok := pc.PrincipalComponents(argv2[0], nil)
+		vecs = pc.Vectors(vecs)
+		vars = pc.Vars(vars)
 		if !ok {
 			return nil, errors.New("internal error in pca()")
 		}

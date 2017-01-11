@@ -82,6 +82,7 @@ loop:
 		text := tinyprompt.GetCommand()
 
 		parts := strings.Split(text, " ")
+
 	switcher:
 		switch parts[0] {
 
