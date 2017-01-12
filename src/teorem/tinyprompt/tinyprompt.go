@@ -3,6 +3,7 @@ package tinyprompt
 import (
 	"bytes"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/pkg/term"
@@ -19,9 +20,10 @@ func PrintHistory() {
 }
 
 // GetCommand reads and returns a new command from the prompt
-func GetCommand() (text string) {
+func GetCommand(debugMode bool) (text string) {
 
 	fmt.Print("> ")
+	var lastkey string
 line_reader:
 	for {
 		c := getch()
@@ -48,6 +50,32 @@ line_reader:
 			break line_reader
 
 		case bytes.Equal(c, []byte{9}): // tab
+			//tab completion... path or key
+			parts := strings.Split(text, " ")
+			dir := parts[len(parts)-1]
+			d2 := parts[len(parts)-1]
+
+			/*//expand tilde symbol
+			usr, _ := user.Current()
+			if dir[:2] == "~/" {
+				d2 = filepath.Join(usr.HomeDir, dir[2:])
+			}*/
+
+			if debugMode {
+				fmt.Printf("Will try to autocomplete %s, conerted from %s\n", d2+"*", dir)
+			}
+
+			matches, err := filepath.Glob(d2 + "*")
+			if err == nil {
+				if len(matches) == 1 {
+					fmt.Printf(matches[0][len(dir):])
+					text = text + matches[0][len(dir):]
+				}
+				if len(matches) > 1 && lastkey == "tab" {
+					fmt.Printf("\n%v\n", matches)
+				}
+			}
+			lastkey = "tab"
 
 		case bytes.Equal(c, []byte{127}): // backspace
 			if len(text) > 0 {
@@ -60,11 +88,19 @@ line_reader:
 
 		default:
 			//fmt.Printf("Key: %v", c)
-			if len(c) == 1 {
+			fmt.Printf("%s", c)
+			text = text + string(c)
+
+			/*if len(c) == 1 {
 				fmt.Printf("%c", c[0])
 				text = text + string(c)
-			}
+			} else {
+				if debugMode {
+					fmt.Printf("Uncaught: %s\n", c)
+				}
+			}*/
 		}
+
 	}
 
 	//text, _ = reader.ReadString('\n')
@@ -79,7 +115,9 @@ line_reader:
 func getch() []byte {
 	t, _ := term.Open("/dev/tty")
 	term.RawMode(t)
-	bytes := make([]byte, 4)
+	// read MAX 512 bytes
+	// puts a limit on pasted text on osx
+	bytes := make([]byte, 512)
 	numRead, err := t.Read(bytes)
 	t.Restore()
 	t.Close()

@@ -5,6 +5,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"os/user"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -81,7 +82,7 @@ func main() {
 
 loop:
 	for {
-		text := tinyprompt.GetCommand()
+		text := tinyprompt.GetCommand(debugMode)
 
 		parts := strings.Split(text, " ")
 
@@ -136,7 +137,7 @@ loop:
 
 		case "load":
 			if len(parts) != 4 && len(parts) != 2 {
-				fmt.Printf("usage: load <field> [to <object>] \n")
+				fmt.Printf("usage: load <field> [as <object>] \n")
 				break
 			}
 			if len(selectedDBs) > 1 {
@@ -166,6 +167,8 @@ loop:
 				if !ok {
 					a := mat64.NewDense(0, 0, nil)
 					matrixes[mat] = a
+				} else {
+					matrixes[mat].Reset()
 				}
 			}
 			destReady := false
@@ -179,6 +182,7 @@ loop:
 			} else {
 				max = selectedDBs[0].Entries()
 			}
+			count = 0
 
 		load_loop:
 			for {
@@ -208,10 +212,7 @@ loop:
 						matrixes[mat] = matrixes[mat].Grow(int(max), len(floats)).(*mat64.Dense)
 						destReady = true
 					}
-					//i, j := matrixes[mat].Dims()
-					//fmt.Printf("Row: %v, %v %v\n", int(count)+1, i, j)
 					matrixes[mat].SetRow(int(count), f64)
-
 				}
 
 				count++
@@ -312,6 +313,7 @@ loop:
 			doTest("pca(random(100,100),20)'")
 			doTest("((((4.0))))")
 			doTest("random(3,3)+(random(3,3)-random(3,3))")
+			doTest("bh_tsne(pca(random(1000,512),100),3,0.5,50)")
 
 		case "reset":
 			//reset iterator for all selected dbs
@@ -534,6 +536,13 @@ loop:
 }
 
 func open(path string) {
+
+	//expand tilde symbol
+	usr, _ := user.Current()
+	if path[:2] == "~/" {
+		path = filepath.Join(usr.HomeDir, path[2:])
+	}
+
 	path, err := filepath.Abs(path)
 	if err != nil {
 		fmt.Printf("Malformed path\n")
