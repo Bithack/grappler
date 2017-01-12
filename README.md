@@ -8,9 +8,9 @@ Grappler can do dimensional reduction with PCA or tsne and write data to ascii f
 Dependencies
 ================
 
-Grappler needs to go compiler and toolkit. Golang packages are automatically downloaded when the program is built.
+Grappler needs the go compiler and toolkit. Golang packages are automatically downloaded when the program is built.
 
-In order the use the tsne reduction, the binary "bh_tsne" needs to be in the path. Clone it from https://github.com/lvdmaaten/bhtsne and compile.
+In order the use tsne reduction, the binary "bh_tsne" needs to be in the path. Clone it from https://github.com/lvdmaaten/bhtsne and compile it.
 
 Building and running it
 ================
