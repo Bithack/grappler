@@ -56,6 +56,8 @@ var lastKey []byte
 var lastValue []byte
 var lastFloats []float32
 
+var debugMode bool = false
+
 var matrixes = make(map[string]*mat64.Dense)
 var matrixesChar = make(map[string]*matchar.Matchar)
 
@@ -274,23 +276,14 @@ loop:
 				break
 			}
 			switch parts[1] {
-			//specifies what should be outputed during next dump
-			//key, floats
-			case "dump":
-				fields := []string{"key", "floats"}
-				if !contains(fields, parts[2]) {
-					fmt.Printf("unknown parameter\n")
-					break
-				}
 
-			//sets output format for write
-			case "format":
-				formats := []string{"ascii", "tsne"}
-				if !contains(formats, parts[2]) {
-					fmt.Printf("unknown format\n")
-					break
+			//debug on/off
+			case "debug":
+				if parts[2] == "on" {
+					debugMode = true
+				} else {
+					debugMode = false
 				}
-				writeFormat = parts[2]
 
 			//adds a filter to the key before it is printed
 			case "filter":
@@ -309,7 +302,16 @@ loop:
 				for _, db := range selectedDBs {
 					db.SetFilterRange(i, j)
 				}
+			default:
+				fmt.Printf("No such option\n")
 			}
+
+		case "test":
+			doTest("(3+(3+3))")
+			doTest("max(mean(random(10,10))')")
+			doTest("pca(random(100,100),20)'")
+			doTest("((((4.0))))")
+			doTest("random(3,3)+(random(3,3)-random(3,3))")
 
 		case "reset":
 			//reset iterator for all selected dbs
@@ -553,6 +555,16 @@ func open(path string) {
 	var d dbInfo
 	dbInfos = append(dbInfos, d)
 
+}
+
+func doTest(expr string) {
+	var err error
+	matrixes["test"], err = parseExpression(expr)
+	if err != nil {
+		fmt.Printf("TEST FAILED\n")
+	} else {
+		printMatrix("test")
+	}
 }
 
 /*

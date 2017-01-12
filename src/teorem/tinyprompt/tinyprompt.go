@@ -27,6 +27,7 @@ line_reader:
 		c := getch()
 		switch {
 		case bytes.Equal(c, []byte{27, 91, 68}): // left
+			fmt.Printf("\b")
 		case bytes.Equal(c, []byte{27, 91, 67}): // right
 		case bytes.Equal(c, []byte{27, 91, 65}): // up
 			if len(history) > 0 && historyScan > 0 {

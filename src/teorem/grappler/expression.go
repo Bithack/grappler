@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/rand"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 
 	"strconv"
@@ -16,9 +18,28 @@ import (
 	"github.com/gonum/stat"
 )
 
-var functions = []string{"pca", "mean", "max", "min", "mul", "size", "bh_tsne"}
+var functions = []string{"pca", "mean", "max", "min", "mul", "size", "bh_tsne", "random", "rand"}
 
+func getScalar(a *mat64.Dense) float64 {
+	return a.At(0, 0)
+}
+
+func isScalar(a *mat64.Dense) bool {
+	return checkDims(a, 1, 1)
+}
+
+func checkDims(a *mat64.Dense, r, c int) bool {
+	r2, c2 := a.Dims()
+	if r2 != r || c2 != c {
+		return false
+	}
+	return true
+}
 func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
+
+	if debugMode {
+		fmt.Printf("parseFunctionCall %s\n", f)
+	}
 
 	argv := strings.Split(args, ",")
 	argv2 := make([]*mat64.Dense, len(argv))
@@ -29,6 +50,20 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 		}
 	}
 	switch f {
+	case "rand", "random":
+		if !isScalar(argv2[0]) || (len(argv) == 2 && !isScalar(argv2[1])) {
+			return nil, errors.New("random expects scalar values as parameters")
+		}
+		r := int(math.Floor(getScalar(argv2[0])))
+		c := 1
+		if len(argv) == 2 {
+			c = int(math.Floor(getScalar(argv2[1])))
+		}
+		floats := make([]float64, r*c)
+		for i := range floats {
+			floats[i] = rand.Float64()
+		}
+		result = mat64.NewDense(r, c, floats)
 
 	case "bh_tsne":
 		//bh_tsne(data, no_dims, theta, perplexity)
@@ -97,14 +132,10 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 		result = mat64.NewDense(1, 2, []float64{float64(r), float64(c)})
 
 	case "mul":
-		var a = argv2[0]
-		var result mat64.Dense
-		for i, v := range argv2 {
-			if i > 0 {
-				result.Mul(a, v)
-			}
-		}
-		//result = mat64.DenseCopyOf(a)
+		r, _ := argv2[0].Dims()
+		_, c2 := argv2[1].Dims()
+		result = mat64.NewDense(r, c2, nil)
+		result.Mul(argv2[0], argv2[1])
 
 	case "pca":
 		if len(argv2) != 2 {
@@ -178,27 +209,52 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 	return
 }
 
+var tempMatrixes = make(map[string]*mat64.Dense)
+var tempIndex int
+
+func splitAndCheckEqualDim(expr string, sep string) (terms2 []*mat64.Dense, lastr int, lastc int, err error) {
+	terms := strings.Split(expr, sep)
+	if len(terms) > 1 {
+		terms2 = make([]*mat64.Dense, len(terms))
+		for i := range terms {
+
+			if len(terms[i]) == 0 {
+				//accepts first term missing (-4, +3)
+				if i == 0 {
+					continue
+				}
+				return nil, 0, 0, errors.New("Missing term")
+			}
+			terms2[i], err = parseExpression(terms[i])
+			if err != nil {
+				return nil, 0, 0, err
+			}
+			r, c := terms2[i].Dims()
+			if (lastr != 0 && lastr != r) || (lastc != 0 && lastc != c) {
+				return nil, 0, 0, errors.New("Dimension mismatch in matrix addition")
+			}
+			lastr = r
+			lastc = c
+		}
+		if len(terms[0]) == 0 {
+			terms2[0] = mat64.NewDense(lastr, lastc, nil)
+		}
+	}
+	return
+}
+
 func parseExpression(expr string) (result *mat64.Dense, err error) {
+
+	if debugMode {
+		fmt.Printf("parseExpression %s\n", expr)
+	}
 
 	//remove all spaces from string
 	expr = strings.Replace(expr, " ", "", -1)
 
-	//scan for function(args) and recurs
-	for _, f := range functions {
-		i0 := strings.Index(expr, f+"(")
-		i1 := strings.LastIndex(expr, ")")
-		if i0 != -1 && i1 != -1 {
-			// for now just return the result of the first function call found
-			// we could add more functionality later on if needed
-			return parseFunctionCall(f, expr[i0+len(f)+1:i1])
-		}
-		//re := regexp.MustCompile(f + "\\((?>[^()]+|(?1))*\\)")
-		//f + "\\([^\\)]*\\)"
-		//f + "\\((?>[^()]+|(?1))*\\)"
-		//loc := re.FindStringIndex(expr)
-	}
+	// ATOMS
 
-	//check for simple numeric value
+	//simple numeric value, "3.1415"
 	f, err := strconv.ParseFloat(expr, 32)
 	if err == nil {
 		//convert to 1x1 matrix
@@ -206,23 +262,98 @@ func parseExpression(expr string) (result *mat64.Dense, err error) {
 		return a, nil
 	}
 
-	//transpose
-	transpose := false
+	//variables, with or without transpose, "term_3", term_3'", "ans'""
 	if len(expr) > 1 && expr[len(expr)-1:] == "'" {
-		expr = expr[:len(expr)-1]
-		//fmt.Printf("test: %v", expr[len(expr)-1:])
-		transpose = true
+		//transpose of variables, "term_3'", "ans'""
+		v, ok := tempMatrixes[expr[0:len(expr)-1]]
+		if ok {
+			return mat64.DenseCopyOf(v.T()), nil
+		}
+		v, ok = matrixes[expr[0:len(expr)-1]]
+		if ok {
+			return mat64.DenseCopyOf(v.T()), nil
+		}
+	} else {
+		v, ok := tempMatrixes[expr]
+		if ok {
+			return v, nil
+		}
+		v, ok = matrixes[expr]
+		if ok {
+			return v, nil
+		}
 	}
 
-	//check if it is the name of an float matrix
-	_, ok := matrixes[expr]
-	if ok {
-		if transpose {
-			a := mat64.DenseCopyOf(matrixes[expr].T())
-			return a, nil
+	// PARENTHESIS
+
+	//find first inner parenthesis group
+	re := regexp.MustCompile("\\([^\\)\\(]*\\)")
+	loc := re.FindStringIndex(expr)
+	if loc != nil {
+		if loc[0] == 0 || strings.Contains("+-*/,(", string(expr[loc[0]-1])) {
+			if debugMode {
+				fmt.Printf("found parenthesis group at %v - %v\n", loc[0], loc[1])
+			}
+			name := "term_" + strconv.Itoa(tempIndex)
+			tempIndex++
+			tempMatrixes[name], err = parseExpression(expr[loc[0]+1 : loc[1]-1])
+			if err != nil {
+				return nil, err
+			}
+			return parseExpression(expr[0:loc[0]] + name + expr[loc[1]:])
 		}
-		return matrixes[expr], nil
 	}
+
+	// FUNCTION CALLS
+
+	//find first inner function call, "random(expr,expr,expr)"
+	//any parenthesis groups within the arguments should be cleared by now :)
+	for _, f := range functions {
+		re := regexp.MustCompile(f + "\\([^\\)\\(]*\\)")
+		loc := re.FindStringIndex(expr)
+		if loc != nil {
+			//The match itself is at s[loc[0]:loc[1]].
+			if debugMode {
+				fmt.Printf("Found function call: %s\n", expr[loc[0]:loc[1]])
+			}
+			name := "term_" + strconv.Itoa(tempIndex)
+			tempIndex++
+			tempMatrixes[name], err = parseFunctionCall(f, expr[loc[0]+len(f)+1:loc[1]-1])
+			if err != nil {
+				return nil, err
+			}
+			return parseExpression(expr[0:loc[0]] + name + expr[loc[1]:])
+		}
+	}
+
+	// OPERATORS
+
+	//split by + groups. if more than 1: parse them, check if dimensions match, then add it together
+	terms, r, c, err := splitAndCheckEqualDim(expr, "+")
+	if err != nil {
+		return nil, err
+	}
+	if terms != nil {
+		result = mat64.NewDense(r, c, nil)
+		for i := range terms {
+			result.Add(result, terms[i])
+		}
+		return result, nil
+	}
+
+	//split by - groups. if more than 1: parse them, check if dimensions match, then add it together
+	terms, r, c, err = splitAndCheckEqualDim(expr, "-")
+	if err != nil {
+		return nil, err
+	}
+	if terms != nil {
+		result = mat64.NewDense(r, c, terms[0].RawMatrix().Data)
+		for i := 1; i < len(terms); i++ {
+			result.Sub(result, terms[i])
+		}
+		return result, nil
+	}
+
 	return nil, errors.New("Unknown expression")
 }
 
