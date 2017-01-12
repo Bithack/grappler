@@ -1,3 +1,3 @@
 #!/bin/bash
 . env.sh
-go get teorem/grappler && bin/grappler $1
+go get teorem/grappler && exec bin/grappler $*
