@@ -97,8 +97,16 @@ loop:
 				fmt.Printf("Usage: get key\n")
 				break
 			}
+			if len(selectedDBs) == 0 {
+				fmt.Printf("Open a db first\n")
+				break
+			}
+			if len(selectedDBs) > 1 {
+				fmt.Printf("only supports retrieving from one db, select one with \"use\"\n")
+				break
+			}
 			var err error
-			lastKey, lastValue, err = myDB.Get([]byte(parts[1]))
+			lastKey, lastValue, err = selectedDBs[0].Get([]byte(parts[1]))
 			if err != nil {
 				fmt.Printf("Failed\n")
 				break
@@ -126,18 +134,13 @@ loop:
 			mb := size / (1024 * 1024)
 			fmt.Printf("Approximate size whole db: %v Mb\n", mb)
 
-		case "reload":
-			if myDB != nil {
-				myDB.Close()
-				open(dbPath)
-			}
-			break
-
-		case "pca":
-
 		case "load":
 			if len(parts) != 4 && len(parts) != 2 {
 				fmt.Printf("usage: load <field> [as <object>] \n")
+				break
+			}
+			if len(selectedDBs) == 0 {
+				fmt.Printf("Open a db first\n")
 				break
 			}
 			if len(selectedDBs) > 1 {
@@ -173,8 +176,8 @@ loop:
 			}
 			destReady := false
 
-			selectedDBs[0].Release()
-			selectedDBs[0].Scan()
+			selectedDBs[0].Reset() //reset cursor to start
+
 			var count uint64
 			var max uint64
 			if limit != 0 {
@@ -186,10 +189,6 @@ loop:
 
 		load_loop:
 			for {
-				if !selectedDBs[0].Next() {
-					break load_loop
-				}
-
 				switch parts[1] {
 				case "keys":
 					key := selectedDBs[0].Key()
@@ -222,10 +221,14 @@ loop:
 				if count >= max {
 					break load_loop
 				}
+				if !selectedDBs[0].Next() {
+					break load_loop
+				}
 			}
 			if count%5000 != 0 {
 				fmt.Printf("%v records loaded\n", count)
 			}
+			selectedDBs[0].Reset()
 
 		case "create", "make":
 			if len(parts) != 3 {
@@ -313,19 +316,18 @@ loop:
 			doTest("pca(random(100,100),20)'")
 			doTest("((((4.0))))")
 			doTest("random(3,3)+(random(3,3)-random(3,3))")
-			doTest("bh_tsne(pca(random(1000,512),100),3,0.5,50)")
+			doTest("bh_tsne(pca(random(500,512),100),3,0.5,50)")
 
 		case "reset":
 			//reset iterator for all selected dbs
 			for _, db := range selectedDBs {
-				db.Release()
-				db.Scan()
+				db.Reset()
 			}
 
 		case "l", "ls", "list":
 			// list keys from one or several dbs
 			// finishes when max is reached, or any of the dbs reaches its end
-			if myDB == nil {
+			if len(selectedDBs) == 0 {
 				fmt.Printf("Open a db first\n")
 				break
 			}
@@ -343,12 +345,12 @@ loop:
 			for {
 
 				for _, db := range selectedDBs {
-					if !db.Next() {
-						break list_loop
-					}
 					key := db.Key()
 					value := db.Value()
 					fmt.Printf("%s (%v bytes)        ", key, len(value))
+					if !db.Next() {
+						break list_loop
+					}
 				}
 				fmt.Printf("\n")
 				count++
@@ -358,11 +360,10 @@ loop:
 
 			}
 
-		case "debug":
-			fmt.Printf("%+v\n", myDB)
-
 		case "stat":
-			myDB.Stat()
+			for _, db := range selectedDBs {
+				db.Stat()
+			}
 
 		case "q", "quit", "exit":
 			break loop
@@ -372,7 +373,6 @@ loop:
 				fmt.Printf("open close db dbs use quit list get reload\n")
 			}
 
-			//stat.Bhattacharyya
 		case "write":
 
 			if len(parts) < 4 {
@@ -442,27 +442,27 @@ loop:
 				break
 			}
 			if len(parts) == 2 {
-				ids := strings.Split(parts[1], ",")
-				selectedDBs = selectedDBs[:0]
-				for _, id := range ids {
-
-					i, err := strconv.Atoi(strings.TrimSpace(id))
-					if err != nil {
-						fmt.Printf("malformed id\n")
-						break
+				if parts[1] == "all" {
+					selectedDBs = allDBs
+				} else {
+					ids := strings.Split(parts[1], ",")
+					selectedDBs = selectedDBs[:0]
+					for _, id := range ids {
+						i, err := strconv.Atoi(strings.TrimSpace(id))
+						if err != nil {
+							fmt.Printf("malformed id\n")
+							break
+						}
+						if i > len(allDBs)-1 {
+							fmt.Printf("no such id\n")
+							break
+						}
+						selectedDBs = append(selectedDBs, allDBs[i])
 					}
-					if i > len(allDBs)-1 {
-						fmt.Printf("no such id\n")
-						break
-					}
-					selectedDBs = append(selectedDBs, allDBs[i])
-				}
-				if len(selectedDBs) > 0 {
-					myDB = selectedDBs[0]
 				}
 			}
 			for i := 0; i < len(allDBs); i++ {
-				if allDBs[i] == myDB || contains(selectedDBs, allDBs[i]) {
+				if contains(selectedDBs, allDBs[i]) {
 					fmt.Printf("--> ")
 				} else {
 					fmt.Printf("    ")
@@ -472,10 +472,10 @@ loop:
 			break
 
 		case "close":
-			if myDB != nil {
-				myDB.Close()
-				myDB = nil
+			for _, db := range selectedDBs {
+				db.Close()
 			}
+			selectedDBs = selectedDBs[:0]
 
 		case "cat", "type":
 			if len(parts) != 2 {

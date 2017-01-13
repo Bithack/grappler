@@ -378,8 +378,31 @@ func printCharMatrix(mat string) {
 		fmt.Printf("%s = []\n", mat)
 	default:
 		fmt.Printf("%s =\n", mat)
-		for i := 0; i < r; i++ {
-			fmt.Printf("%s\n", matrixesChar[mat].RowView(i))
+		if r > 10 {
+			fmt.Printf("Dims(%v, 1)\n", r)
+			str := matrixesChar[mat].RowView(0)
+			fmt.Printf("⎡%s"+strings.Repeat(" ", c-len(str))+"⎤\n", str)
+			for i := 1; i < 5; i++ {
+				str = matrixesChar[mat].RowView(i)
+				fmt.Printf("⎢%s"+strings.Repeat(" ", c-len(str))+"⎥\n", str)
+			}
+			fmt.Printf(" .\n .\n .\n")
+			for i := r - 5; i < r-1; i++ {
+				str = matrixesChar[mat].RowView(i)
+				fmt.Printf("⎢%s"+strings.Repeat(" ", c-len(str))+"⎥\n", str)
+			}
+			str = matrixesChar[mat].RowView(r - 1)
+			fmt.Printf("⎣%s"+strings.Repeat(" ", c-len(str))+"⎦\n", str)
+
+		} else {
+			str := matrixesChar[mat].RowView(0)
+			fmt.Printf("⎡%s"+strings.Repeat(" ", c-len(str))+"⎤\n", str)
+			for i := 1; i < r-1; i++ {
+				str = matrixesChar[mat].RowView(i)
+				fmt.Printf("⎢%s"+strings.Repeat(" ", c-len(str))+"⎥\n", str)
+			}
+			str = matrixesChar[mat].RowView(r - 1)
+			fmt.Printf("⎣%s"+strings.Repeat(" ", c-len(str))+"⎦\n", str)
 		}
 		//fmt.Printf("%s =\n%.4f\n", mat, fa)
 	}

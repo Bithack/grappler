@@ -58,7 +58,7 @@ func (db *ADB) Stat() {
 
 }
 
-// Get return the value of a key
+// Get returns the value of a key
 func (db *ADB) Get(k []byte) (key []byte, value []byte, err error) {
 	if bytes.Equal(k, []byte("last")) {
 		key = db.lastKey
@@ -82,12 +82,12 @@ func (db *ADB) Get(k []byte) (key []byte, value []byte, err error) {
 	return
 }
 
-//Path returns path of this db
+// Path returns path of this db
 func (db *ADB) Path() string {
 	return db.path
 }
 
-//Identity returns identity of this db
+// Identity returns identity of this db
 func (db *ADB) Identity() string {
 	return db.identity
 }
@@ -135,6 +135,7 @@ func (db *ADB) Scan() {
 				fmt.Printf("Could not open cursor\n")
 				return
 			}
+			db.Reset()
 		}
 	}
 }
@@ -143,6 +144,11 @@ func (db *ADB) Scan() {
 func (db *ADB) Seek(k []byte) {
 	//what about the key filter ?
 	db.lmdbCursor.Get(k, nil, lmdb.SetRange)
+}
+
+// Reset moves the cursor to the top
+func (db *ADB) Reset() {
+	db.lmdbKey, db.lmdbValue, _ = db.lmdbCursor.Get(nil, nil, lmdb.First)
 }
 
 // Key returns key of current iterator
