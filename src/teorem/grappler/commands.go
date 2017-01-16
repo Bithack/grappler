@@ -29,7 +29,7 @@ switcher:
 
 	case "put":
 		if len(parts) < 2 {
-			fmt.Printf("Usage: put key,value [into namespace.set]\n")
+			fmt.Printf("Usage: put <keys>,<values> [into <namespace>.<set>]\n")
 			break
 		}
 		if len(selectedDBs) != 1 {
@@ -44,25 +44,92 @@ switcher:
 		keys, ok := matrixesChar[v[0]]
 		if !ok {
 			fmt.Printf("No such variable %s\n", v[0])
+			break
 		}
 		values, ok := matrixes[v[1]]
 		if !ok {
 			fmt.Printf("No such variable %s\n", v[1])
+			break
+		}
+		var namespace, set string
+		if parts[2] == "into" {
+			nss := strings.Split(parts[3], ".")
+			namespace = nss[0]
+			set = nss[1]
+		} else {
+			namespace = "test"
+			set = "geohashes"
 		}
 		//Aerospike GEOPoint hack!
 		r, c := values.Dims()
+		r2, _ := keys.Dims()
+		if r != r2 {
+			fmt.Printf("Row count of %v and %v doesnt match\n", v[0], v[1])
+			break
+		}
 		if c == 2 && selectedDBs[0].Identity() == "aerospike" {
 			for i := 0; i < r; i++ {
 				jsonPoint := `{ "type": "Point", "coordinates": [` + strconv.FormatFloat(values.At(i, 0), 'f', -1, 64) + "," + strconv.FormatFloat(values.At(i, 1), 'f', -1, 64) + `] }`
 				//fmt.Printf("%s\n", jsonPoint)
-				err := selectedDBs[0].PutGeoJSON("test", "geohashes", "point", []byte(keys.RowView(i)), jsonPoint)
+				err := selectedDBs[0].PutGeoJSON(namespace, set, "point", []byte(keys.RowView(i)), jsonPoint)
 				if err != nil {
 					fmt.Printf("Aerospike error: %v", err)
 				}
+				if (i+1)%5000 == 0 {
+					fmt.Printf("%v records written\n", i+1)
+				}
+			}
+			if r%5000 != 0 {
+				fmt.Printf("%v records written\n", r)
 			}
 		} else {
 			fmt.Printf("Not supported yet\n")
 		}
+
+	case "search":
+		if len(parts) < 8 {
+			fmt.Printf("Usage: search <namespace>.<set> where <bin> within <meters> from <lat>,<lng>\n")
+			break
+		}
+		if len(selectedDBs) != 1 || selectedDBs[0].Identity() != "aerospike" {
+			fmt.Printf("Open and select ONE aerospike db first\n")
+			break
+		}
+		var namespace, set string
+		nss := strings.Split(parts[1], ".")
+		namespace = nss[0]
+		set = nss[1]
+		bin := parts[3]
+		radius, err := strconv.ParseFloat(parts[5], 64)
+		if err != nil {
+			fmt.Printf("Error parsing distance\n")
+			break
+		}
+		latlng := strings.Split(parts[7], ",")
+		lat, err := strconv.ParseFloat(latlng[0], 64)
+		if err != nil {
+			fmt.Printf("Error parsing latitude\n")
+			break
+		}
+		lng, err := strconv.ParseFloat(latlng[1], 64)
+		if err != nil {
+			fmt.Printf("Error parsing longitude\n")
+			break
+		}
+		result, err := selectedDBs[0].RadiusSearch(namespace, set, bin, lat, lng, radius)
+		if err != nil {
+			fmt.Printf("%v\n", err)
+			break
+		}
+		count := 0
+		for res := range result.Results() {
+			if res.Err != nil {
+				fmt.Printf("%v\n", res.Err)
+			}
+			fmt.Printf("%v\n", res.Record)
+			count++
+		}
+		fmt.Printf("Found %v records\n", count)
 
 	case "config":
 		fmt.Printf("%+v\n", config)
@@ -170,20 +237,43 @@ switcher:
 				matrixesChar[mat].Append(string(key))
 
 			case "floats", "floatdata":
-				value := selectedDBs[0].Value()
-				d := &caffe.Datum{}
-				err := proto.Unmarshal(value, d)
-				if err != nil {
-					fmt.Printf("unmarshaling error\n")
-					break
+
+				/*	for i := 1; i < len(row); i++ {
+					f, err := strconv.ParseFloat(row[i], 64)
+					if err != nil {
+						f = 0
+					}
+					db.fileFloats = append(db.fileFloats, f)*/
+
+				var f64 []float64
+				var err error
+				if selectedDBs[0].Identity() == "lmdb" {
+					value := selectedDBs[0].Value()
+					d := &caffe.Datum{}
+					err = proto.Unmarshal(value, d)
+					if err != nil {
+						fmt.Printf("unmarshaling error\n")
+						break
+					}
+					floats := d.GetFloatData()
+					f64 = make([]float64, len(floats))
+					for i, v := range floats {
+						f64[i] = float64(v)
+					}
 				}
-				floats := d.GetFloatData()
-				f64 := make([]float64, len(floats))
-				for i, v := range floats {
-					f64[i] = float64(v)
+				if selectedDBs[0].Identity() == "file" {
+					// space seperated list with floats
+					value := string(selectedDBs[0].Value())
+					floats := strings.Split(value, " ")
+					f64 = make([]float64, len(floats))
+					for i := range floats {
+						f64[i], err = strconv.ParseFloat(floats[i], 64)
+					}
+					fmt.Printf("%+v\n", f64)
 				}
+
 				if !destReady {
-					matrixes[mat] = matrixes[mat].Grow(int(max), len(floats)).(*mat64.Dense)
+					matrixes[mat] = matrixes[mat].Grow(int(max), len(f64)).(*mat64.Dense)
 					destReady = true
 				}
 				matrixes[mat].SetRow(int(count), f64)
@@ -583,6 +673,7 @@ func doTest(expr string) int {
 		return 0
 	}
 	printMatrix("test")
+	clearParser()
 	return 1
 
 }

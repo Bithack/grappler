@@ -6,6 +6,7 @@ Might be supported in the future: bolt, aerospike
 package anydb
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/bmatsuo/lmdb-go/lmdb"
@@ -46,6 +48,11 @@ type ADB struct {
 	folderFiles    []os.FileInfo
 	folderIterator int
 
+	fileHandle  *os.File
+	fileScanner *bufio.Scanner
+	fileKey     []byte
+	fileValue   []byte
+
 	aerospikeClient *aerospike.Client
 
 	keyFilter [2]int
@@ -53,6 +60,7 @@ type ADB struct {
 
 // Entries returns estimated(?) number of entries
 func (db *ADB) Entries() (entries uint64) {
+
 	switch db.identity {
 	case "lmdb":
 		stat, _ := db.lmdbEnv.Stat()
@@ -134,6 +142,9 @@ func (db *ADB) Release() {
 // Scan setups iterator/cursor if there is none
 func (db *ADB) Scan() {
 	switch db.identity {
+	case "file":
+		db.fileScanner = bufio.NewScanner(db.fileHandle)
+
 	case "leveldb":
 		if db.levelIterator == nil {
 			db.levelIterator = db.leveldb.NewIterator(nil, nil)
@@ -173,12 +184,16 @@ func (db *ADB) Reset() {
 		db.lmdbKey, db.lmdbValue, _ = db.lmdbCursor.Get(nil, nil, lmdb.First)
 	case "folder":
 		db.folderIterator = 0
+	case "file":
+		db.fileScanner = bufio.NewScanner(db.fileHandle)
 	}
 }
 
 // Key returns key of current iterator
 func (db *ADB) Key() (key []byte) {
 	switch db.identity {
+	case "file":
+		key = db.fileKey
 	case "leveldb":
 		key = db.levelIterator.Key()
 	case "lmdb":
@@ -198,6 +213,23 @@ func (db *ADB) Key() (key []byte) {
 	return
 }
 
+// RadiusSearch searches an aerospike db using a geoindex
+func (db *ADB) RadiusSearch(namespace string, set string, bin string, lat, lng float64, radius float64) (*aerospike.Recordset, error) {
+	switch db.identity {
+	case "aerospike":
+		stm := aerospike.NewStatement(namespace, set)
+		stm.Addfilter(aerospike.NewGeoWithinRadiusFilter(bin, lng, lat, radius))
+		recordset, err := db.aerospikeClient.Query(nil, stm)
+		if err != nil {
+			return nil, err
+		}
+		return recordset, nil
+
+	default:
+		return nil, errors.New("Not supported")
+	}
+}
+
 // PutGeoJSON stores GeoJSON data in an aerospike namespace/set/bin
 func (db *ADB) PutGeoJSON(namespace string, set string, bin string, key []byte, json string) error {
 	switch db.identity {
@@ -206,11 +238,9 @@ func (db *ADB) PutGeoJSON(namespace string, set string, bin string, key []byte, 
 		if err != nil {
 			return err
 		}
-		asBin := aerospike.Bin{
-			Name:  bin,
-			Value: aerospike.NewGeoJSONValue(json),
-		}
-		err = db.aerospikeClient.PutBins(nil, asKey, &asBin)
+		bin1 := aerospike.NewBin("key", key)
+		bin2 := aerospike.NewBin(bin, aerospike.NewGeoJSONValue(json))
+		err = db.aerospikeClient.PutBins(nil, asKey, bin1, bin2)
 		if err != nil {
 			return err
 		}
@@ -229,6 +259,8 @@ func (db *ADB) Put(keys []byte, values []byte) {
 // Value returns value of current iterator
 func (db *ADB) Value() (value []byte) {
 	switch db.identity {
+	case "file":
+		value = db.fileValue
 	case "leveldb":
 		value = db.levelIterator.Value()
 	case "lmdb":
@@ -246,6 +278,12 @@ func (db *ADB) Next() bool {
 		} else {
 			return false
 		}
+
+	case "file":
+		db.fileScanner.Scan()
+		row := strings.Split(db.fileScanner.Text(), " ")
+		db.fileKey = []byte(row[0])
+		db.fileValue = []byte(strings.Join(row[1:], " "))
 
 	case "leveldb":
 		return db.levelIterator.Next()
@@ -294,6 +332,9 @@ func (db *ADB) Close() {
 	if db.aerospikeClient != nil {
 		db.aerospikeClient.Close()
 	}
+	if db.fileHandle != nil {
+		db.fileHandle.Close()
+	}
 }
 
 // Open opens a database located at the supplied path (could be file or directory or server)
@@ -315,6 +356,12 @@ func Open(path string, dbType string) (db *ADB, err error) {
 		db.aerospikeClient, err = aerospike.NewClientWithPolicy(policy, path, 3000)
 		if err == nil {
 			return db, nil
+		}
+
+	case "file":
+		db.fileHandle, err = os.Open(path)
+		if err != nil {
+			return nil, err
 		}
 
 	case "folder":
@@ -377,6 +424,8 @@ func guessDBType(path string) (string, string) {
 			return "leveldb", path
 		}
 		return "folder", path
+	} else {
+		return "file", path
 	}
 
 	return "unknown", path
