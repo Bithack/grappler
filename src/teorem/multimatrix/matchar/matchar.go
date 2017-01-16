@@ -1,22 +1,10 @@
 package matchar
 
-import "math"
+import (
+	"math"
 
-// Matrix is the basic matrix interface type.
-type Matrix interface {
-	// Dims returns the dimensions of a Matrix.
-	Dims() (r, c int)
-
-	// At returns the value of a matrix element at row i, column j.
-	// It will panic if i or j are out of bounds for the matrix.
-	At(i, j int) float64
-
-	// T returns the transpose of the Matrix. Whether T returns a copy of the
-	// underlying data is implementation dependent.
-	// This method may be implemented using the Transpose type, which
-	// provides an implicit matrix transpose.
-	T() Matrix
-}
+	"github.com/gonum/matrix/mat64"
+)
 
 // Matchar is a char matrix representation. Row count equals number of strings stored. Col count equals the max length of the strings.
 type Matchar struct {
@@ -65,7 +53,7 @@ func (m *Matchar) Dims() (r, c int) {
 }
 
 // T returns transpose of char matrix
-func (m *Matchar) T() (mat Matrix) {
+func (m *Matchar) T() (mat mat64.Matrix) {
 	return
 }
 

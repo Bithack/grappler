@@ -7,14 +7,21 @@ package anydb
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
+	"os/user"
+	"path/filepath"
 
 	"github.com/bmatsuo/lmdb-go/lmdb"
 	"github.com/syndtr/goleveldb/leveldb"
 	"github.com/syndtr/goleveldb/leveldb/iterator"
 	"github.com/syndtr/goleveldb/leveldb/opt"
 	"github.com/syndtr/goleveldb/leveldb/util"
+
+	"strings"
+
+	aerospike "github.com/aerospike/aerospike-client-go"
 )
 
 // ADB is the anydb struct
@@ -34,6 +41,8 @@ type ADB struct {
 	//lmdbScanner *lmdbscan.Scanner
 	lmdbKey   []byte
 	lmdbValue []byte
+
+	aerospikeClient *aerospike.Client
 
 	keyFilter [2]int
 }
@@ -161,14 +170,21 @@ func (db *ADB) Key() (key []byte) {
 	}
 
 	//apply key filter
-	if db.keyFilter[0] != 0 || db.keyFilter[1] != -1 {
-		if db.keyFilter[1] == -1 || db.keyFilter[1] > len(key) {
+	if db.keyFilter[0] != 0 || db.keyFilter[1] != 0 {
+		if db.keyFilter[1] == 0 || db.keyFilter[1] > len(key) {
 			key = key[db.keyFilter[0]:]
 		} else {
 			key = key[db.keyFilter[0] : db.keyFilter[1]+1]
 		}
 	}
 	return
+}
+
+// Put ...
+func (db *ADB) Put(keys []byte, values []byte) {
+	//key, err := aerospike.NewKey("test", "geohashes", row[0])
+	//json := `{ "type": "Point", "coordinates": ` + "10.30, 14.9" + ` }`
+	//aerospike.NewGeoJSONValue(json)
 }
 
 // Value returns value of current iterator
@@ -198,6 +214,16 @@ func (db *ADB) Next() bool {
 	return true
 }
 
+// Show returns info from aerospike node
+func (db *ADB) Show(info string) (r map[string]string, err error) {
+	if db.aerospikeClient != nil {
+		nodes := db.aerospikeClient.GetNodes()
+		r, err = aerospike.RequestNodeInfo(nodes[0], info)
+		return
+	}
+	return nil, errors.New("Sorry, only works with an aerospike db")
+}
+
 // SizeOf returns approximate size of supplied key range
 func (db *ADB) SizeOf(start []byte, stop []byte) (size int64) {
 	switch db.identity {
@@ -219,12 +245,32 @@ func (db *ADB) Close() {
 	if db.lmdbEnv != nil {
 		db.lmdbEnv.Close()
 	}
+	if db.aerospikeClient != nil {
+		db.aerospikeClient.Close()
+	}
 }
 
-// Open opens a database located at the supplied path (could be file or directory)
+// Open opens a database located at the supplied path (could be file or directory or server)
 func Open(path string) (db *ADB, err error) {
-
 	db = &ADB{}
+
+	//a server ?
+	if !strings.Contains(path, "/") {
+		db.aerospikeClient, err = aerospike.NewClient(path, 3000)
+		if err == nil {
+			//we found an aerospike server!
+			db.path = path
+			db.identity = "aerospike"
+			return db, nil
+		}
+	}
+
+	//expand tilde symbol
+	if path[:2] == "~/" {
+		usr, _ := user.Current()
+		path = filepath.Join(usr.HomeDir, path[2:])
+	}
+	path, _ = filepath.Abs(path)
 
 	//first detect db type
 	info, err := os.Stat(path)
@@ -271,7 +317,5 @@ func Open(path string) (db *ADB, err error) {
 		err = fmt.Errorf("bolt unsupported")
 	}
 
-	db.keyFilter[0] = 0
-	db.keyFilter[1] = -1
 	return
 }

@@ -18,7 +18,7 @@ import (
 	"github.com/gonum/stat"
 )
 
-var functions = []string{"pca", "mean", "max", "min", "mul", "size", "bh_tsne", "random", "rand"}
+var functions = []string{"ones", "zeros", "pca", "mean", "max", "min", "mul", "size", "bh_tsne", "random", "rand"}
 
 func getScalar(a *mat64.Dense) float64 {
 	return a.At(0, 0)
@@ -50,6 +50,32 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 		}
 	}
 	switch f {
+	case "ones":
+		if !isScalar(argv2[0]) || (len(argv) == 2 && !isScalar(argv2[1])) {
+			return nil, errors.New("ones() expects scalar values as parameters")
+		}
+		r := int(math.Floor(getScalar(argv2[0])))
+		c := 1
+		if len(argv) == 2 {
+			c = int(math.Floor(getScalar(argv2[1])))
+		}
+		floats := make([]float64, r*c)
+		for i := range floats {
+			floats[i] = 1
+		}
+		result = mat64.NewDense(r, c, floats)
+
+	case "zeros":
+		if !isScalar(argv2[0]) || (len(argv) == 2 && !isScalar(argv2[1])) {
+			return nil, errors.New("ones() expects scalar values as parameters")
+		}
+		r := int(math.Floor(getScalar(argv2[0])))
+		c := 1
+		if len(argv) == 2 {
+			c = int(math.Floor(getScalar(argv2[1])))
+		}
+		result = mat64.NewDense(r, c, nil)
+
 	case "rand", "random":
 		if !isScalar(argv2[0]) || (len(argv) == 2 && !isScalar(argv2[1])) {
 			return nil, errors.New("random expects scalar values as parameters")
@@ -212,6 +238,20 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 var tempMatrixes = make(map[string]*mat64.Dense)
 var tempIndex int
 
+func split(expr string, sep string) (terms2 []*mat64.Dense, err error) {
+	terms := strings.Split(expr, sep)
+	if len(terms) > 1 {
+		terms2 = make([]*mat64.Dense, len(terms))
+		for i := range terms {
+			terms2[i], err = parseExpression(terms[i])
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	return
+}
+
 func splitAndCheckEqualDim(expr string, sep string) (terms2 []*mat64.Dense, lastr int, lastc int, err error) {
 	terms := strings.Split(expr, sep)
 	if len(terms) > 1 {
@@ -231,7 +271,7 @@ func splitAndCheckEqualDim(expr string, sep string) (terms2 []*mat64.Dense, last
 			}
 			r, c := terms2[i].Dims()
 			if (lastr != 0 && lastr != r) || (lastc != 0 && lastc != c) {
-				return nil, 0, 0, errors.New("Dimension mismatch in matrix addition")
+				return nil, 0, 0, errors.New("Dimension mismatch")
 			}
 			lastr = r
 			lastc = c
@@ -241,6 +281,12 @@ func splitAndCheckEqualDim(expr string, sep string) (terms2 []*mat64.Dense, last
 		}
 	}
 	return
+}
+
+func clearParser() {
+	for i := range tempMatrixes {
+		delete(tempMatrixes, i)
+	}
 }
 
 func parseExpression(expr string) (result *mat64.Dense, err error) {
@@ -341,7 +387,7 @@ func parseExpression(expr string) (result *mat64.Dense, err error) {
 		return result, nil
 	}
 
-	//split by - groups. if more than 1: parse them, check if dimensions match, then add it together
+	// split by - groups. if more than 1: parse them, check if dimensions match, then add it together
 	terms, r, c, err = splitAndCheckEqualDim(expr, "-")
 	if err != nil {
 		return nil, err
@@ -350,6 +396,47 @@ func parseExpression(expr string) (result *mat64.Dense, err error) {
 		result = mat64.NewDense(r, c, terms[0].RawMatrix().Data)
 		for i := 1; i < len(terms); i++ {
 			result.Sub(result, terms[i])
+		}
+		return result, nil
+	}
+
+	// split by .* groups. if more than 1: parse them
+	terms, r, c, err = splitAndCheckEqualDim(expr, ".*")
+	if err != nil {
+		return nil, err
+	}
+	if len(terms) > 1 {
+		result = mat64.DenseCopyOf(terms[0])
+		for i := 1; i < len(terms); i++ {
+			result.MulElem(result, terms[i])
+		}
+		return result, nil
+	}
+
+	// split by * groups. if more than 1: parse them
+	terms, err = split(expr, "*")
+	if err != nil {
+		return nil, err
+	}
+	if terms != nil {
+		result = terms[0]
+
+		for i := 1; i < len(terms); i++ {
+			r, c := result.Dims()
+			r2, c2 := terms[i].Dims()
+			//scalar multiplication?
+			if r2 == 1 && c2 == 1 {
+				result.Scale(terms[i].At(0, 0), result)
+			} else if r == 1 && c == 1 {
+				terms[i].Scale(result.At(0, 0), terms[i])
+				result = terms[i]
+			} else if r2 != c {
+				return nil, errors.New("Dimension mismatch")
+			} else {
+				res2 := mat64.NewDense(r, c2, nil)
+				res2.Mul(result, terms[i])
+				result = res2
+			}
 		}
 		return result, nil
 	}
