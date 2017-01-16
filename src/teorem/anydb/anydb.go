@@ -9,17 +9,18 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"os/user"
 	"path/filepath"
+	"regexp"
+	"time"
 
 	"github.com/bmatsuo/lmdb-go/lmdb"
 	"github.com/syndtr/goleveldb/leveldb"
 	"github.com/syndtr/goleveldb/leveldb/iterator"
 	"github.com/syndtr/goleveldb/leveldb/opt"
 	"github.com/syndtr/goleveldb/leveldb/util"
-
-	"strings"
 
 	aerospike "github.com/aerospike/aerospike-client-go"
 )
@@ -42,6 +43,9 @@ type ADB struct {
 	lmdbKey   []byte
 	lmdbValue []byte
 
+	folderFiles    []os.FileInfo
+	folderIterator int
+
 	aerospikeClient *aerospike.Client
 
 	keyFilter [2]int
@@ -53,6 +57,8 @@ func (db *ADB) Entries() (entries uint64) {
 	case "lmdb":
 		stat, _ := db.lmdbEnv.Stat()
 		entries = stat.Entries
+	case "folder":
+		entries = uint64(len(db.folderFiles))
 	}
 	return
 }
@@ -75,6 +81,8 @@ func (db *ADB) Get(k []byte) (key []byte, value []byte, err error) {
 		key = k
 	}
 	switch db.identity {
+	case "folder":
+
 	case "leveldb":
 		value, err = db.leveldb.Get(key, nil)
 
@@ -151,13 +159,21 @@ func (db *ADB) Scan() {
 
 // Seek moves the cursor to k
 func (db *ADB) Seek(k []byte) {
-	//what about the key filter ?
-	db.lmdbCursor.Get(k, nil, lmdb.SetRange)
+	switch db.identity {
+	case "lmdb":
+		//what about the key filter ?
+		db.lmdbCursor.Get(k, nil, lmdb.SetRange)
+	}
 }
 
 // Reset moves the cursor to the top
 func (db *ADB) Reset() {
-	db.lmdbKey, db.lmdbValue, _ = db.lmdbCursor.Get(nil, nil, lmdb.First)
+	switch db.identity {
+	case "lmdb":
+		db.lmdbKey, db.lmdbValue, _ = db.lmdbCursor.Get(nil, nil, lmdb.First)
+	case "folder":
+		db.folderIterator = 0
+	}
 }
 
 // Key returns key of current iterator
@@ -167,6 +183,8 @@ func (db *ADB) Key() (key []byte) {
 		key = db.levelIterator.Key()
 	case "lmdb":
 		key = db.lmdbKey
+	case "folder":
+		key = []byte(db.folderFiles[db.folderIterator].Name())
 	}
 
 	//apply key filter
@@ -180,11 +198,32 @@ func (db *ADB) Key() (key []byte) {
 	return
 }
 
+// PutGeoJSON stores GeoJSON data in an aerospike namespace/set/bin
+func (db *ADB) PutGeoJSON(namespace string, set string, bin string, key []byte, json string) error {
+	switch db.identity {
+	case "aerospike":
+		asKey, err := aerospike.NewKey(namespace, set, key)
+		if err != nil {
+			return err
+		}
+		asBin := aerospike.Bin{
+			Name:  bin,
+			Value: aerospike.NewGeoJSONValue(json),
+		}
+		err = db.aerospikeClient.PutBins(nil, asKey, &asBin)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Put ...
 func (db *ADB) Put(keys []byte, values []byte) {
-	//key, err := aerospike.NewKey("test", "geohashes", row[0])
-	//json := `{ "type": "Point", "coordinates": ` + "10.30, 14.9" + ` }`
-	//aerospike.NewGeoJSONValue(json)
+	switch db.identity {
+	case "aerospike":
+
+	}
 }
 
 // Value returns value of current iterator
@@ -201,6 +240,13 @@ func (db *ADB) Value() (value []byte) {
 // Next returns the next record
 func (db *ADB) Next() bool {
 	switch db.identity {
+	case "folder":
+		if db.folderIterator < len(db.folderFiles)-1 {
+			db.folderIterator++
+		} else {
+			return false
+		}
+
 	case "leveldb":
 		return db.levelIterator.Next()
 	case "lmdb":
@@ -251,47 +297,29 @@ func (db *ADB) Close() {
 }
 
 // Open opens a database located at the supplied path (could be file or directory or server)
-func Open(path string) (db *ADB, err error) {
+// With empty dbType is will guess
+func Open(path string, dbType string) (db *ADB, err error) {
 	db = &ADB{}
 
-	//a server ?
-	if !strings.Contains(path, "/") {
-		db.aerospikeClient, err = aerospike.NewClient(path, 3000)
+	if dbType != "" {
+		db.identity, db.path = dbType, path
+	} else {
+		db.identity, db.path = guessDBType(path)
+	}
+
+	//now open it
+	switch db.identity {
+	case "aerospike":
+		policy := aerospike.NewClientPolicy()
+		policy.Timeout = 5000 * time.Millisecond
+		db.aerospikeClient, err = aerospike.NewClientWithPolicy(policy, path, 3000)
 		if err == nil {
-			//we found an aerospike server!
-			db.path = path
-			db.identity = "aerospike"
 			return db, nil
 		}
-	}
 
-	//expand tilde symbol
-	if path[:2] == "~/" {
-		usr, _ := user.Current()
-		path = filepath.Join(usr.HomeDir, path[2:])
-	}
-	path, _ = filepath.Abs(path)
+	case "folder":
+		db.folderFiles, _ = ioutil.ReadDir(db.path)
 
-	//first detect db type
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, err
-	}
-	if info.IsDir() {
-		_, err = os.Stat(path + "/data.mdb")
-		if err == nil {
-			db.identity = "lmdb"
-		} else {
-			//TODO: do some check
-			db.identity = "leveldb"
-		}
-	} else {
-		//assume bolt
-		db.identity = "bolt"
-	}
-
-	//then open it
-	switch db.identity {
 	case "lmdb":
 		db.lmdbEnv, err = lmdb.NewEnv()
 		if err != nil {
@@ -301,7 +329,6 @@ func Open(path string) (db *ADB, err error) {
 		if err != nil {
 			return nil, err
 		}
-		db.path = path
 		db.lmdbEnv.SetMaxDBs(10)
 		err = db.lmdbEnv.Update(func(txn *lmdb.Txn) (err error) {
 			db.lmdb, err = txn.OpenRoot(0)
@@ -315,7 +342,42 @@ func Open(path string) (db *ADB, err error) {
 
 	case "bolt":
 		err = fmt.Errorf("bolt unsupported")
+
+	case "unknown":
+		err = errors.New("No such db")
 	}
 
 	return
+}
+
+func guessDBType(path string) (string, string) {
+
+	re := regexp.MustCompile("^(?:[0-9]{1,3}\\.){3}[0-9]{1,3}$")
+	if re.Match([]byte(path)) {
+		//ip adress ?
+		return "aerospike", path
+	}
+
+	// probably a file path
+	//expand tilde symbol
+	if len(path) > 1 && path[:2] == "~/" {
+		usr, _ := user.Current()
+		path = filepath.Join(usr.HomeDir, path[2:])
+	}
+	path, _ = filepath.Abs(path)
+
+	info, err := os.Stat(path)
+	if err == nil && info.IsDir() {
+		_, err = os.Stat(path + "/data.mdb")
+		if err == nil {
+			return "lmdb", path
+		}
+		files, err := filepath.Glob("*.ldb")
+		if err == nil && len(files) > 0 {
+			return "leveldb", path
+		}
+		return "folder", path
+	}
+
+	return "unknown", path
 }

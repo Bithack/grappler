@@ -19,7 +19,7 @@ import (
 
 func eval(text string) bool {
 
-	parts := strings.Split(text, " ")
+	parts := strings.Split(strings.Trim(text, " "), " ")
 
 switcher:
 	switch parts[0] {
@@ -29,9 +29,43 @@ switcher:
 
 	case "put":
 		if len(parts) < 2 {
-			fmt.Printf("Usage: put key, values [into namespace.set]\n")
+			fmt.Printf("Usage: put key,value [into namespace.set]\n")
 			break
 		}
+		if len(selectedDBs) != 1 {
+			fmt.Printf("Open and select ONE db first\n")
+			break
+		}
+		v := strings.Split(parts[1], ",")
+		if len(v) != 2 {
+			fmt.Printf("Expected key,value as second parameter\n")
+			break
+		}
+		keys, ok := matrixesChar[v[0]]
+		if !ok {
+			fmt.Printf("No such variable %s\n", v[0])
+		}
+		values, ok := matrixes[v[1]]
+		if !ok {
+			fmt.Printf("No such variable %s\n", v[1])
+		}
+		//Aerospike GEOPoint hack!
+		r, c := values.Dims()
+		if c == 2 && selectedDBs[0].Identity() == "aerospike" {
+			for i := 0; i < r; i++ {
+				jsonPoint := `{ "type": "Point", "coordinates": [` + strconv.FormatFloat(values.At(i, 0), 'f', -1, 64) + "," + strconv.FormatFloat(values.At(i, 1), 'f', -1, 64) + `] }`
+				//fmt.Printf("%s\n", jsonPoint)
+				err := selectedDBs[0].PutGeoJSON("test", "geohashes", "point", []byte(keys.RowView(i)), jsonPoint)
+				if err != nil {
+					fmt.Printf("Aerospike error: %v", err)
+				}
+			}
+		} else {
+			fmt.Printf("Not supported yet\n")
+		}
+
+	case "config":
+		fmt.Printf("%+v\n", config)
 
 	case "get":
 		if len(parts) != 2 {
@@ -171,7 +205,7 @@ switcher:
 		}
 		if parts[1] == "floats" {
 			printMatrix(mat)
-		} else {
+		} else if parts[1] == "keys" {
 			printCharMatrix(mat)
 		}
 
@@ -311,8 +345,8 @@ switcher:
 			if count >= max {
 				break
 			}
-
 		}
+		fmt.Printf("\n")
 
 	case "stat":
 		for _, db := range selectedDBs {

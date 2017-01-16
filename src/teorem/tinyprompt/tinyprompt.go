@@ -117,17 +117,18 @@ line_reader:
 			}*/
 
 			if debugMode {
-				fmt.Printf("Will try to autocomplete %s, conerted from %s\n", d2+"*", dir)
+				fmt.Printf("Will try to autocomplete %s, converted from %s\n", d2+"*", dir)
 			}
 
 			matches, err := filepath.Glob(d2 + "*")
 			if err == nil {
 				if len(matches) == 1 {
-					fmt.Printf(matches[0][len(dir):])
-					text = text + matches[0][len(dir):]
+					fmt.Printf(matches[0][len(dir):] + "/")
+					text = text + matches[0][len(dir):] + "/"
 				}
 				if len(matches) > 1 && lastkey == "tab" {
 					fmt.Printf("\n%v\n", matches)
+					fmt.Printf("> %s", text)
 				}
 			}
 			lastkey = "tab"
