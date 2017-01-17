@@ -52,6 +52,7 @@ type ADB struct {
 	fileScanner *bufio.Scanner
 	fileKey     []byte
 	fileValue   []byte
+	fileLines   uint64
 
 	aerospikeClient *aerospike.Client
 
@@ -62,6 +63,12 @@ type ADB struct {
 func (db *ADB) Entries() (entries uint64) {
 
 	switch db.identity {
+	case "file":
+		if db.fileLines == 0 {
+			db.fileLines = getLineCount(db.path)
+		}
+		return db.fileLines
+
 	case "lmdb":
 		stat, _ := db.lmdbEnv.Stat()
 		entries = stat.Entries
@@ -137,6 +144,9 @@ func (db *ADB) Release() {
 		db.lmdbTxn.Abort()
 		db.lmdbTxn = nil
 	}
+	if db.fileHandle != nil {
+		db.fileHandle.Close()
+	}
 }
 
 // Scan setups iterator/cursor if there is none
@@ -144,6 +154,7 @@ func (db *ADB) Scan() {
 	switch db.identity {
 	case "file":
 		db.fileScanner = bufio.NewScanner(db.fileHandle)
+		db.Next()
 
 	case "leveldb":
 		if db.levelIterator == nil {
@@ -185,7 +196,9 @@ func (db *ADB) Reset() {
 	case "folder":
 		db.folderIterator = 0
 	case "file":
+		db.fileHandle.Seek(0, 0)
 		db.fileScanner = bufio.NewScanner(db.fileHandle)
+		db.Next()
 	}
 }
 
@@ -429,4 +442,15 @@ func guessDBType(path string) (string, string) {
 	}
 
 	return "unknown", path
+}
+
+func getLineCount(path string) uint64 {
+	f, _ := os.Open(path)
+	scanner := bufio.NewScanner(f)
+	var count uint64
+	for scanner.Scan() {
+		count++
+	}
+	f.Close()
+	return count
 }

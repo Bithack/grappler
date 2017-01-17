@@ -123,6 +123,7 @@ line_reader:
 			matches, err := filepath.Glob(d2 + "*")
 			if err == nil {
 				if len(matches) == 1 {
+					//file or string match???
 					fmt.Printf(matches[0][len(dir):] + "/")
 					text = text + matches[0][len(dir):] + "/"
 				}

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"teorem/grappler/caffe"
+	"teorem/matlab"
 	"teorem/multimatrix/matchar"
 	"teorem/tinyprompt"
 	"time"
@@ -130,6 +131,18 @@ switcher:
 			count++
 		}
 		fmt.Printf("Found %v records\n", count)
+
+		//save session variables to MATLAB 5.0 file, not implemented yet
+	case "save":
+		if len(parts) > 2 {
+			fmt.Printf("Usage: save [<filename>]\n")
+			break
+		}
+		filename := "session.mat"
+		if len(parts) == 2 {
+			filename = parts[1]
+		}
+		matlab.WriteMatlabFile(filename, nil)
 
 	case "config":
 		fmt.Printf("%+v\n", config)
@@ -269,7 +282,6 @@ switcher:
 					for i := range floats {
 						f64[i], err = strconv.ParseFloat(floats[i], 64)
 					}
-					fmt.Printf("%+v\n", f64)
 				}
 
 				if !destReady {
