@@ -148,8 +148,8 @@ switcher:
 		fmt.Printf("%+v\n", config)
 
 	case "get":
-		if len(parts) != 2 {
-			fmt.Printf("Usage: get key\n")
+		if len(parts) < 2 {
+			fmt.Printf("Usage: get key [from <namespace>.<set>]\n")
 			break
 		}
 		if len(selectedDBs) == 0 {
@@ -161,28 +161,43 @@ switcher:
 			break
 		}
 		var err error
+		if len(parts) == 4 && parts[2] == "from" {
+			if selectedDBs[0].Identity() != "aerospike" {
+				fmt.Printf("Syntax only available for aerospike dbs\n")
+				break
+			}
+			//assume aerospike
+			nss := strings.Split(parts[3], ".")
+			selectedDBs[0].SetContext(nss[0], nss[1])
+			record, err := selectedDBs[0].GetRecord([]byte(parts[1]))
+			if err != nil {
+				fmt.Printf("Didn't work\n")
+				break
+			}
+			fmt.Printf("%+v\n", record)
+			break
+		}
 		lastKey, lastValue, err = selectedDBs[0].Get([]byte(parts[1]))
 		if err != nil {
 			fmt.Printf("Failed\n")
 			break
 		}
-
-		//fmt.Printf("Raw: %v\n", data)
-
-		d := &caffe.Datum{}
-		err = proto.Unmarshal(lastValue, d)
-		if err != nil {
-			log.Fatal("unmarshaling error: ", err)
-			break
+		if selectedDBs[0].Identity() == "lmdb" {
+			d := &caffe.Datum{}
+			err = proto.Unmarshal(lastValue, d)
+			if err != nil {
+				log.Fatal("unmarshaling error: ", err)
+				break
+			}
+			fmt.Printf("Channels: %v, Height: %v, Width: %v\n", d.GetChannels(), d.GetHeight(), d.GetWidth())
+			fmt.Printf("Labels: %v\n", d.GetLabel())
+			d1 := d.GetData()
+			lastFloats = d.GetFloatData()
+			fmt.Printf("Data: %v bytes\nFloatData: %v float32 (%v bytes)\n", len(d1), len(lastFloats), len(lastFloats)*4)
+			fmt.Printf("Unrecognized: %v bytes\n", len(d.XXX_unrecognized))
+		} else {
+			fmt.Printf("%+v\n", lastValue)
 		}
-		fmt.Printf("Channels: %v, Height: %v, Width: %v\n", d.GetChannels(), d.GetHeight(), d.GetWidth())
-		fmt.Printf("Labels: %v\n", d.GetLabel())
-
-		d1 := d.GetData()
-		lastFloats = d.GetFloatData()
-
-		fmt.Printf("Data: %v bytes\nFloatData: %v float32 (%v bytes)\n", len(d1), len(lastFloats), len(lastFloats)*4)
-		fmt.Printf("Unrecognized: %v bytes\n", len(d.XXX_unrecognized))
 
 	case "size", "info":
 		size := myDB.SizeOf([]byte("00000000"), []byte("99999999"))

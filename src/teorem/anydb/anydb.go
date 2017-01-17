@@ -54,9 +54,21 @@ type ADB struct {
 	fileValue   []byte
 	fileLines   uint64
 
-	aerospikeClient *aerospike.Client
+	aerospikeClient    *aerospike.Client
+	aerospikeNamespace string
+	aerospikeSet       string
 
 	keyFilter [2]int
+}
+
+// SetContext sets namespace and set for aerospike requests
+func (db *ADB) SetContext(namespace string, set string) (err error) {
+	if db.identity == "aerospike" {
+		db.aerospikeSet = set
+		db.aerospikeNamespace = namespace
+		return
+	}
+	return errors.New("Not supported")
 }
 
 // Entries returns estimated(?) number of entries
@@ -88,6 +100,26 @@ func (db *ADB) Stat() {
 
 }
 
+// GetRecord returns an aerospike record
+func (db *ADB) GetRecord(key []byte) (record *aerospike.Record, err error) {
+	switch db.identity {
+	case "aerospike":
+		var k *aerospike.Key
+		k, err = aerospike.NewKey(db.aerospikeNamespace, db.aerospikeSet, key)
+		if err != nil {
+			return
+		}
+		record, err = db.aerospikeClient.Get(nil, k)
+		if err != nil {
+			return
+		}
+		return
+
+	default:
+		return nil, errors.New("Not supported")
+	}
+}
+
 // Get returns the value of a key
 func (db *ADB) Get(k []byte) (key []byte, value []byte, err error) {
 	if bytes.Equal(k, []byte("last")) {
@@ -96,6 +128,7 @@ func (db *ADB) Get(k []byte) (key []byte, value []byte, err error) {
 		key = k
 	}
 	switch db.identity {
+
 	case "folder":
 
 	case "leveldb":
@@ -251,7 +284,7 @@ func (db *ADB) PutGeoJSON(namespace string, set string, bin string, key []byte, 
 		if err != nil {
 			return err
 		}
-		bin1 := aerospike.NewBin("key", key)
+		bin1 := aerospike.NewBin("key", string(key))
 		bin2 := aerospike.NewBin(bin, aerospike.NewGeoJSONValue(json))
 		err = db.aerospikeClient.PutBins(nil, asKey, bin1, bin2)
 		if err != nil {
