@@ -383,6 +383,14 @@ func (db *ADB) Close() {
 	}
 }
 
+// Create sets up a new database at the given path
+// Only LMDB supported for now
+func Create(path string, dbType string) {
+	switch dbType {
+
+	}
+}
+
 // Open opens a database located at the supplied path (could be file or directory or server)
 // With empty dbType is will guess
 func Open(path string, dbType string) (db *ADB, err error) {

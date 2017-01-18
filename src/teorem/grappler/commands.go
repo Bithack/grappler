@@ -20,7 +20,7 @@ import (
 
 func eval(text string) bool {
 
-	parts := strings.Split(strings.Trim(text, " "), " ")
+	parts := strings.Split(strings.ToLower(strings.Trim(text, " ")), " ")
 
 switcher:
 	switch parts[0] {
@@ -328,20 +328,12 @@ switcher:
 
 		selectedDBs[0].Reset()
 
-	case "create", "make":
-		if len(parts) != 3 {
-			fmt.Printf("usage: create <object> <name>\n")
+	case "create":
+		if len(parts) != 6 || parts[1] != "siamese" || parts[2] != "dataset" {
+			fmt.Printf("Usage:\nCREATE SIAMESE DATASET <db> with cropping[,brightness][,sharpness][,blur]\n")
 			break
 		}
-		switch parts[1] {
-		case "matrix":
-			a := mat64.NewDense(0, 0, nil)
-			matrixes[parts[2]] = a
-			printMatrix(parts[2])
-
-		default:
-			fmt.Printf("unknown object %s\n", parts[1])
-		}
+		//dbname := parts[3]
 
 	case "start", "seek":
 		if len(parts) != 2 {
@@ -357,17 +349,6 @@ switcher:
 			fmt.Printf("usage: end <string>\n")
 			break
 		}
-
-	case "limit":
-		if len(parts) != 2 {
-			fmt.Printf("usage: limit <number>\n")
-			break
-		}
-		l, err := strconv.Atoi(parts[1])
-		if err != nil {
-			fmt.Printf("malformed number\n")
-		}
-		limit = uint64(l)
 
 	case "dump":
 		//dump data to screen or file from one or several dbs
@@ -386,6 +367,13 @@ switcher:
 			} else {
 				debugMode = false
 			}
+
+		case "limit":
+			l, err := strconv.Atoi(parts[2])
+			if err != nil {
+				fmt.Printf("malformed number\n")
+			}
+			limit = uint64(l)
 
 		//adds a filter to the key before it is printed
 		case "filter":
@@ -408,7 +396,7 @@ switcher:
 			fmt.Printf("No such option\n")
 		}
 
-	case "test":
+	case "_test":
 		tests := []string{"(3+(3+3))",
 			"max(mean(random(10,10))')",
 			"pca(random(100,100),20)'",
@@ -475,7 +463,50 @@ switcher:
 
 	case "?", "help":
 		if len(parts) == 1 {
-			fmt.Printf("open close db dbs use quit list get reload\n")
+			fmt.Printf("COMMANDS\n")
+			fmt.Printf("\n")
+			fmt.Printf("  DATABASES\n")
+			fmt.Printf("    OPEN /path/to/lmdb | /path/to/image-folder | <filename> | aerospike:<server>\n")
+			fmt.Printf("    CLOSE\n")
+			fmt.Printf("    DBS\n")
+			fmt.Printf("    USE <id>[,<id>]\n")
+			fmt.Printf("\n")
+			fmt.Printf("  ITERATOR\n")
+			fmt.Printf("    RESET\n")
+			fmt.Printf("    LS [n]\n")
+			fmt.Printf("\n")
+			fmt.Printf("  OPTIONS\n")
+			fmt.Printf("    SET start n\n")
+			fmt.Printf("    SET limit n\n")
+			fmt.Printf("    SET filter [i]:[j]\n")
+			fmt.Printf("    SET filter [i]:[j]\n")
+			fmt.Printf("\n")
+			fmt.Printf("  READ/WRITE\n")
+			fmt.Printf("    GET <key> [from <namespace>.<set>]\n")
+			fmt.Printf("    LOAD <field> [as <variable>]\n")
+			fmt.Printf("    WRITE <variable>[,variable] to <filename>\n")
+			fmt.Printf("    PUT <keys>,<values> [into <namespace>.<set>]\n")
+			fmt.Printf("\n")
+			fmt.Printf("  IMAGE OPERATIONS\n")
+			fmt.Printf("    CREATE SIAMESE DATASET <db> with cropping[,brightness][,sharpness][,blur]\n")
+			fmt.Printf("\n")
+			fmt.Printf("  INFO\n")
+			fmt.Printf("    WHO\n")
+			fmt.Printf("    SHOW namespaces | sets | bins | namespace/<namespace>\n")
+			fmt.Printf("\n")
+			fmt.Printf("  MATH\n")
+			fmt.Printf("    rand(i[,j])\n")
+			fmt.Printf("    ones(i[,j])\n")
+			fmt.Printf("    zeros(i[,j])\n")
+			fmt.Printf("    max(A)\n")
+			fmt.Printf("    min(A)\n")
+			fmt.Printf("    mean(A)\n")
+			fmt.Printf("    max(A)\n")
+			fmt.Printf("    size(A)\n")
+			fmt.Printf("    pca(A)\n")
+			fmt.Printf("    bh_tsne(A, dim, theta, perplexity)\n")
+			fmt.Printf("    A', A + B, A - B, A * B, A .* B\n")
+			fmt.Printf("\n")
 		}
 
 	case "write":
@@ -583,7 +614,7 @@ switcher:
 		selectedDBs = selectedDBs[:0]
 
 	case "show":
-		if len(parts) > 2 {
+		if len(parts) != 2 {
 			fmt.Printf("usage: show parameter\n")
 			break
 		}
@@ -626,7 +657,7 @@ switcher:
 
 	case "":
 
-	case "w", "who", "whos":
+	case "who", "whos":
 		if len(matrixes) == 0 && len(matrixesChar) == 0 {
 			fmt.Printf("No variables yet\n")
 			break

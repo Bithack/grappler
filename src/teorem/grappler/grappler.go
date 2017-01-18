@@ -69,10 +69,7 @@ var usr *user.User
 
 func main() {
 
-	a := matchar.NewMatchar([]string{"hej", "hopp", "lingon"})
-	matrixesChar["str"] = a
-
-	fmt.Printf("Teorem Data Grappler\nVersion 0.0.9\n")
+	fmt.Printf("Teorem Data Grappler\nVersion 0.0.10\n")
 
 	if len(os.Args) > 1 {
 		for i := 1; i < len(os.Args); i++ {
@@ -97,12 +94,6 @@ func main() {
 	}
 
 	fmt.Printf("Interactive mode. Type \"help\" for commands.\n")
-
-	eval("open features")
-	eval("limit 100")
-	eval("load keys")
-	eval("r = random(100,2)")
-	eval("open t4")
 
 	for {
 		text := tinyprompt.GetCommand(debugMode)

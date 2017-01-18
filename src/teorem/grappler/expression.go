@@ -208,7 +208,7 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 		//mean of matrix calculates returns row vector with means for ever column
 		//first calc transpose matrix and then use RawRowView to get the float64 values
 		if len(argv2) != 1 {
-			return nil, errors.New("mean() only accepts one matrix argument")
+			return nil, errors.New("expected on matrix argument to mean()")
 		}
 		_, c := argv2[0].Dims()
 		a := mat64.DenseCopyOf(argv2[0].T())
@@ -218,17 +218,25 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 		}
 
 	case "min":
-		var min = math.MaxFloat64
-		for _, v := range argv2 {
-			min = math.Min(min, mat64.Min(v))
+		if len(argv2) != 1 {
+			return nil, errors.New("expected on matrix argument to min()")
 		}
-		result = mat64.NewDense(1, 1, []float64{min})
+		_, c := argv2[0].Dims()
+		result = mat64.NewDense(1, c, nil)
+		for i := 0; i < c; i++ {
+			result.Set(0, i, mat64.Min(argv2[0].ColView(i)))
+		}
+
 	case "max":
-		var max = math.SmallestNonzeroFloat64
-		for _, v := range argv2 {
-			max = math.Max(max, mat64.Max(v))
+		if len(argv2) != 1 {
+			return nil, errors.New("expected on matrix argument to max()")
 		}
-		result = mat64.NewDense(1, 1, []float64{max})
+		_, c := argv2[0].Dims()
+		result = mat64.NewDense(1, c, nil)
+		for i := 0; i < c; i++ {
+			result.Set(0, i, mat64.Max(argv2[0].ColView(i)))
+		}
+
 	default:
 		err = errors.New("Unknown function " + f + "()")
 	}
