@@ -2,9 +2,11 @@
 
 Grappler is an interactive multi-purpose tool for extracting keys and floating point data from key-value databases like LMDB or plain ascii files, and then working with them in a matlab-like interface.
 
+Most basic matrix operations are supported (if you miss anything let us know). We have also support for the external tool bh_tsne which is great for data visualization.
+
 The processed data can be saved in ascii files or bulk written to another database (only Aerospike supported so far).
 
-We use it for extraction multi-dimensional feature vectors LMDB databases generated with the deep learning framework Caffe.
+We use grappler for working with multi-dimensional feature vectors generated with the deep learning framework Caffe.
 
 ## Dependencies
 
