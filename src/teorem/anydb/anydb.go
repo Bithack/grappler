@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"image"
-	"image/jpeg"
 	"io/ioutil"
 	"os"
 	"os/user"
@@ -21,6 +20,7 @@ import (
 	"time"
 
 	"github.com/bmatsuo/lmdb-go/lmdb"
+	"github.com/disintegration/imaging"
 	"github.com/syndtr/goleveldb/leveldb"
 	"github.com/syndtr/goleveldb/leveldb/iterator"
 	"github.com/syndtr/goleveldb/leveldb/opt"
@@ -124,7 +124,7 @@ func (db *ADB) GetRecord(key []byte) (record *aerospike.Record, err error) {
 	}
 }
 
-// Get returns the value of a key
+// Get returns the value of a key, without moving the iterator
 func (db *ADB) Get(k []byte) (key []byte, value []byte, err error) {
 	if bytes.Equal(k, []byte("last")) {
 		key = db.lastKey
@@ -134,6 +134,11 @@ func (db *ADB) Get(k []byte) (key []byte, value []byte, err error) {
 	switch db.identity {
 
 	case "folder":
+		for i := range db.folderFiles {
+			if bytes.Compare(k, []byte(db.folderFiles[i].Name())) == 0 {
+				value, err = ioutil.ReadFile(filepath.Join(db.path, db.folderFiles[i].Name()))
+			}
+		}
 
 	case "leveldb":
 		value, err = db.leveldb.Get(key, nil)
@@ -160,7 +165,7 @@ func (db *ADB) Image() (image image.Image, err error) {
 	case "lmdb":
 
 	case "folder":
-		image, err = jpeg.Decode(db)
+		image, err = imaging.Decode(bytes.NewReader(db.folderValue))
 
 	default:
 		return nil, errors.New("No supported")
@@ -343,7 +348,7 @@ func (db *ADB) Value() (value []byte) {
 	switch db.identity {
 	case "folder":
 		if db.folderValue == nil {
-			db.folderValue, _ = ioutil.ReadFile(db.path + db.folderFiles[db.folderIterator].Name())
+			db.folderValue, _ = ioutil.ReadFile(filepath.Join(db.path, db.folderFiles[db.folderIterator].Name()))
 			db.folderValueIterator = 0
 		}
 		value = db.folderValue
@@ -448,13 +453,13 @@ func Open(path string, dbType string) (db *ADB, err error) {
 	case "aerospike":
 		policy := aerospike.NewClientPolicy()
 		policy.Timeout = 5000 * time.Millisecond
-		db.aerospikeClient, err = aerospike.NewClientWithPolicy(policy, path, 3000)
+		db.aerospikeClient, err = aerospike.NewClientWithPolicy(policy, db.path, 3000)
 		if err == nil {
 			return db, nil
 		}
 
 	case "file":
-		db.fileHandle, err = os.Open(path)
+		db.fileHandle, err = os.Open(db.path)
 		if err != nil {
 			return nil, err
 		}
@@ -467,7 +472,7 @@ func Open(path string, dbType string) (db *ADB, err error) {
 		if err != nil {
 			return nil, err
 		}
-		err = db.lmdbEnv.Open(path, 0, 0644)
+		err = db.lmdbEnv.Open(db.path, 0, 0644)
 		if err != nil {
 			return nil, err
 		}
@@ -480,7 +485,7 @@ func Open(path string, dbType string) (db *ADB, err error) {
 	case "leveldb":
 		var options opt.Options
 		options.ErrorIfMissing = true
-		db.leveldb, err = leveldb.OpenFile(path, &options)
+		db.leveldb, err = leveldb.OpenFile(db.path, &options)
 
 	case "bolt":
 		err = fmt.Errorf("bolt unsupported")
@@ -494,14 +499,14 @@ func Open(path string, dbType string) (db *ADB, err error) {
 
 func guessDBType(path string) (string, string) {
 
+	//ip adress ?
 	re := regexp.MustCompile("^(?:[0-9]{1,3}\\.){3}[0-9]{1,3}$")
 	if re.Match([]byte(path)) {
-		//ip adress ?
 		return "aerospike", path
 	}
 
 	// probably a file path
-	//expand tilde symbol
+	// expand tilde symbol
 	if len(path) > 1 && path[:2] == "~/" {
 		usr, _ := user.Current()
 		path = filepath.Join(usr.HomeDir, path[2:])

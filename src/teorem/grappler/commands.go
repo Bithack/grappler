@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"os"
 	"regexp"
 	"strconv"
@@ -14,12 +16,16 @@ import (
 	"teorem/tinyprompt"
 	"time"
 
+	"image"
+
+	"github.com/disintegration/imaging"
 	"github.com/golang/protobuf/proto"
 	"github.com/gonum/matrix/mat64"
 )
 
-func eval(text string) bool {
+func eval(text string) (status bool) {
 
+	status = true
 	parts := strings.Split(strings.ToLower(strings.Trim(text, " ")), " ")
 
 switcher:
@@ -149,7 +155,7 @@ switcher:
 
 	case "get":
 		if len(parts) < 2 {
-			fmt.Printf("Usage: get key [from <namespace>.<set>]\n")
+			fmt.Printf("Usage: get key [from <namespace>.<set>] [as <object>]\n")
 			break
 		}
 		if len(selectedDBs) == 0 {
@@ -177,9 +183,41 @@ switcher:
 			fmt.Printf("%+v\n", record)
 			break
 		}
+		if len(parts) == 4 && parts[2] == "as" {
+			switch parts[3] {
+			case "image":
+				_, value, err := selectedDBs[0].Get([]byte(parts[1]))
+				if err != nil {
+					fmt.Printf("Failed: %v", err)
+					return
+				}
+				i, err := imaging.Decode(bytes.NewReader(value))
+				if err != nil {
+					fmt.Printf("Failed: %v", err)
+					return
+				}
+				// try it as a NRGBA
+				img, ok := i.(*image.NRGBA)
+				if !ok {
+					fmt.Printf("Not a NRGBA\n")
+					return
+				}
+				bounds := img.Bounds()
+				w := bounds.Dx()
+				h := bounds.Dy()
+				s := w * h
+				fmt.Printf("Image: %v\n", bounds)
+				fmt.Printf("4 channels, %v bytes per channel\n", len(img.Pix)/4)
+				rm := mean(img.Pix[0*s : s])
+				gm := mean(img.Pix[1*s : 2*s])
+				bm := mean(img.Pix[2*s : 3*s])
+				fmt.Printf("Mean values: %.4f, %.4f, %.4f\n", rm, gm, bm)
+				return
+			}
+		}
 		lastKey, lastValue, err = selectedDBs[0].Get([]byte(parts[1]))
 		if err != nil {
-			fmt.Printf("Failed\n")
+			fmt.Printf("Failed: %v\n", err)
 			break
 		}
 		if selectedDBs[0].Identity() == "lmdb" {
@@ -333,7 +371,59 @@ switcher:
 			fmt.Printf("Usage:\nCREATE SIAMESE DATASET <db> with cropping[,brightness][,sharpness][,blur]\n")
 			break
 		}
+		if len(selectedDBs) != 1 {
+			fmt.Printf("Open and select ONE db first\n")
+			break
+		}
 		//dbname := parts[3]
+		selectedDBs[0].Reset()
+		var max, count uint64
+		if limit != 0 {
+			max = limit
+		} else {
+			max = selectedDBs[0].Entries()
+		}
+		todo := strings.Split(parts[5], ",")
+		fmt.Printf("Parsing images\n")
+	create_loop:
+		for {
+			key := selectedDBs[0].Key()
+			value := selectedDBs[0].Value()
+			fmt.Printf("\r[%v:%v] %s (%v bytes)", count, max, key, len(value))
+
+			// decode the image, typically a JPEG
+			img, err := imaging.Decode(bytes.NewReader(value))
+			if err != nil {
+				//skip this image, proceed to next
+				if !selectedDBs[0].Next() {
+					break create_loop
+				}
+				break
+			}
+
+			// select one random operation from the todo
+			op := rand.Intn(len(todo))
+			var dst image.Image
+			switch todo[op] {
+			case "cropping":
+				//dst = imaging.Crop()
+			case "brightness":
+				dst = imaging.AdjustBrightness(img, float64(85+rand.Intn(30)))
+			case "sharpness":
+				dst = imaging.Sharpen(img, 5)
+			case "blur":
+				dst = imaging.Blur(img, 5)
+			}
+			fmt.Printf("%v", dst)
+			count++
+			if count >= max {
+				break
+			}
+			if !selectedDBs[0].Next() {
+				break create_loop
+			}
+		}
+		fmt.Printf("\n")
 
 	case "start", "seek":
 		if len(parts) != 2 {
@@ -652,6 +742,8 @@ switcher:
 			fmt.Printf("usage: open path/to/db\n")
 			break
 		}
+		// parts have been converted to lowercase, reparse it before trying to open it
+		parts := strings.Split(strings.Trim(text, " "), " ")
 		dbPath = parts[1]
 		open(parts[1])
 
@@ -740,4 +832,12 @@ func doTest(expr string) int {
 	clearParser()
 	return 1
 
+}
+
+func mean(data []uint8) (v float64) {
+	for i := range data {
+		v += float64(data[i])
+	}
+	v = v / float64(len(data))
+	return
 }

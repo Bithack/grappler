@@ -143,6 +143,10 @@ func open(path string) {
 	var err error
 	for _, p := range toTry {
 
+		if debugMode {
+			fmt.Printf("Trying %v\n", p)
+		}
+
 		myDB, err = anydb.Open(p, dbType)
 		if err == nil {
 			fmt.Printf("Database opened.")
