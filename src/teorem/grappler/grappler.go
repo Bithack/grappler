@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"math/rand"
 	"os"
 	"os/user"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"time"
 
 	"teorem/anydb"
 	"teorem/multimatrix/matchar"
@@ -70,6 +72,8 @@ var usr *user.User
 func main() {
 
 	fmt.Printf("Teorem Data Grappler\nVersion 0.0.10\n")
+
+	rand.Seed(time.Now().UTC().UnixNano())
 
 	if len(os.Args) > 1 {
 		for i := 1; i < len(os.Args); i++ {

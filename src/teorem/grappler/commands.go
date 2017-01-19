@@ -677,19 +677,21 @@ switcher:
 
 	default:
 
-		//remove all spaces from string
-		text = strings.Replace(text, " ", "", -1)
-		//check here for assignment
+		// check here for assignment
+		// currently skips any returnMatrixes, but we could implement multivariable assignment
 		t := strings.Split(text, "=")
 		re := regexp.MustCompile("^[a-zA-Z0-9]+$")
 		if len(t) == 2 {
+			t[0] = strings.Trim(t[0], " ")
 			if re.Match([]byte(t[0])) {
 				r, err := parseExpression(t[1])
-				if err == nil {
-					matrixes[t[0]] = r
-					printMatrix(t[0])
+				if err != nil {
+					fmt.Printf("%v\n", err)
 					break
 				}
+				matrixes[t[0]] = r
+				printMatrix(t[0])
+				break
 			} else {
 				fmt.Printf("Only letters and digits allowed in variable names\n")
 				break
@@ -704,10 +706,14 @@ switcher:
 			if stop.Seconds() > 1 {
 				fmt.Printf("Time elapsed: %.4vs\n", stop)
 			}
+			for _, i := range returnMatrixesOrder {
+				matrixes[i] = returnMatrixes[i]
+				printMatrix(i)
+			}
 			matrixes["ans"] = ans
 			printMatrix("ans")
 		} else {
-			//check if its a char matrix
+			//check if its a char matrix (currently not handled by parseExpression)
 			_, ok := matrixesChar[text]
 			if ok {
 				printCharMatrix(text)

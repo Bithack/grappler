@@ -10,6 +10,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"image"
+	"image/jpeg"
 	"io/ioutil"
 	"os"
 	"os/user"
@@ -45,8 +47,10 @@ type ADB struct {
 	lmdbKey   []byte
 	lmdbValue []byte
 
-	folderFiles    []os.FileInfo
-	folderIterator int
+	folderFiles         []os.FileInfo
+	folderIterator      int
+	folderValue         []byte
+	folderValueIterator int
 
 	fileHandle  *os.File
 	fileScanner *bufio.Scanner
@@ -143,6 +147,23 @@ func (db *ADB) Get(k []byte) (key []byte, value []byte, err error) {
 			return err
 		})
 
+	}
+	return
+}
+
+// Image returns a go Image parsed from the value of the current iterator
+// From a folder it tries to load the file as an Image
+// From a LMDB it extracts uint8 data for all channels from a caffe Datum
+// For other DBs it is undefined
+func (db *ADB) Image() (image image.Image, err error) {
+	switch db.identity {
+	case "lmdb":
+
+	case "folder":
+		image, err = jpeg.Decode(db)
+
+	default:
+		return nil, errors.New("No supported")
 	}
 	return
 }
@@ -302,9 +323,30 @@ func (db *ADB) Put(keys []byte, values []byte) {
 	}
 }
 
+// Read implements the io.Reader interface by reading the value at the current iterator
+func (db *ADB) Read(p []byte) (n int, err error) {
+	v := db.Value()
+	if len(p) > len(v)-db.folderValueIterator {
+		n = len(v) - db.folderValueIterator
+	} else {
+		n = len(p)
+	}
+	for i := 0; i < n; i++ {
+		p[i] = v[db.folderValueIterator]
+		db.folderValueIterator++
+	}
+	return
+}
+
 // Value returns value of current iterator
 func (db *ADB) Value() (value []byte) {
 	switch db.identity {
+	case "folder":
+		if db.folderValue == nil {
+			db.folderValue, _ = ioutil.ReadFile(db.path + db.folderFiles[db.folderIterator].Name())
+			db.folderValueIterator = 0
+		}
+		value = db.folderValue
 	case "file":
 		value = db.fileValue
 	case "leveldb":
@@ -319,18 +361,17 @@ func (db *ADB) Value() (value []byte) {
 func (db *ADB) Next() bool {
 	switch db.identity {
 	case "folder":
+		db.folderValue = nil
 		if db.folderIterator < len(db.folderFiles)-1 {
 			db.folderIterator++
 		} else {
 			return false
 		}
-
 	case "file":
 		db.fileScanner.Scan()
 		row := strings.Split(db.fileScanner.Text(), " ")
 		db.fileKey = []byte(row[0])
 		db.fileValue = []byte(strings.Join(row[1:], " "))
-
 	case "leveldb":
 		return db.levelIterator.Next()
 	case "lmdb":
