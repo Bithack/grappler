@@ -114,6 +114,19 @@ func main() {
 	tinyprompt.SaveHistory("~/.grappler_history", []string{"q", "quit"})
 }
 
+// Create new db and return it
+// Does not update selectedDBs
+func create(path string, dbtype string) (db *anydb.ADB, err error) {
+	db, err = anydb.Create(path, dbtype)
+	if err != nil {
+		return nil, err
+	}
+	allDBs = append(allDBs, db)
+	// setup iterator
+	db.Scan()
+	return
+}
+
 // Open LMDB, leveldb, aerospike server or just an file folder
 // Will try to guess which kinds of database path refers to
 // We can also give directions with "aerospike:t4", "lmdb:/foo/bar"

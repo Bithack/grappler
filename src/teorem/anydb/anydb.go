@@ -321,11 +321,18 @@ func (db *ADB) PutGeoJSON(namespace string, set string, bin string, key []byte, 
 }
 
 // Put ...
-func (db *ADB) Put(keys []byte, values []byte) {
+func (db *ADB) Put(key []byte, value []byte) (err error) {
 	switch db.identity {
 	case "aerospike":
-
+	case "lmdb":
+		err = db.lmdbEnv.Update(func(txn *lmdb.Txn) (err error) {
+			err = txn.Put(db.lmdb, key, value, 0)
+			return err
+		})
+	default:
+		return errors.New("Currently not supported for this db")
 	}
+	return
 }
 
 // Read implements the io.Reader interface by reading the value at the current iterator
@@ -431,10 +438,42 @@ func (db *ADB) Close() {
 
 // Create sets up a new database at the given path
 // Only LMDB supported for now
-func Create(path string, dbType string) {
+func Create(path string, dbType string) (db *ADB, err error) {
+	db = &ADB{}
 	switch dbType {
+	case "lmdb":
+		db.lmdbEnv, err = lmdb.NewEnv()
+		if err != nil {
+			return nil, err
+		}
+		db.lmdbEnv.SetMaxDBs(10)
+		db.lmdbEnv.SetMapSize(10000000000) // 10 GB
+		err := os.MkdirAll(path, 0700)
+		if err != nil {
+			db.lmdbEnv.Close()
+			return nil, err
+		}
+		err = db.lmdbEnv.Open(path, lmdb.NoLock, 0644)
+		if err != nil {
+			db.lmdbEnv.Close()
+			return nil, err
+		}
+		err = db.lmdbEnv.Update(func(txn *lmdb.Txn) (err error) {
+			db.lmdb, err = txn.OpenRoot(lmdb.Create)
+			return err
+		})
+		if err != nil {
+			db.lmdbEnv.Close()
+			return nil, err
+		}
+		db.path = path
+		db.identity = "lmdb"
+
+	default:
+		return nil, errors.New("No such db")
 
 	}
+	return
 }
 
 // Open opens a database located at the supplied path (could be file or directory or server)
@@ -474,6 +513,7 @@ func Open(path string, dbType string) (db *ADB, err error) {
 		}
 		err = db.lmdbEnv.Open(db.path, 0, 0644)
 		if err != nil {
+			db.lmdbEnv.Close()
 			return nil, err
 		}
 		db.lmdbEnv.SetMaxDBs(10)

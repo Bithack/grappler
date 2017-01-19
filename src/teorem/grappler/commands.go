@@ -366,14 +366,14 @@ switcher:
 
 		selectedDBs[0].Reset()
 
-	case "create":
-		if len(parts) != 6 || parts[1] != "siamese" || parts[2] != "dataset" {
-			fmt.Printf("Usage:\nCREATE SIAMESE DATASET <db> with cropping[,brightness][,sharpness][,blur]\n")
-			break
+	case "generate":
+		if len(parts) != 7 || parts[1] != "siamese" || parts[2] != "dataset" {
+			fmt.Printf("Usage:\nGENERATE SIAMESE DATASET <db> (<width>,<height>) with cropping[,brightness][,sharpness][,blur]\n")
+			return
 		}
 		if len(selectedDBs) != 1 {
 			fmt.Printf("Open and select ONE db first\n")
-			break
+			return
 		}
 		//dbname := parts[3]
 		selectedDBs[0].Reset()
@@ -383,13 +383,43 @@ switcher:
 		} else {
 			max = selectedDBs[0].Entries()
 		}
-		todo := strings.Split(parts[5], ",")
-		fmt.Printf("Parsing images\n")
+
+		destSize := strings.Split(strings.Trim(parts[4], ")("), ",")
+		if len(destSize) != 2 {
+			fmt.Printf("Mistyped image dimensions\n")
+			return
+		}
+
+		destW, err := strconv.Atoi(destSize[0])
+		if err != nil {
+			fmt.Printf("Malformed integer\n")
+			return
+		}
+		destH, err := strconv.Atoi(destSize[1])
+		if err != nil {
+			fmt.Printf("Malformed integer\n")
+			return
+		}
+
+		todo := strings.Split(parts[6], ",")
+		fmt.Printf("Will generate LMDB database \"%v\" with siamese image blocks of size %v x %v\n", parts[3], destW, destH)
+		fmt.Printf("Working...\n")
+
+		start := time.Now()
+
+		// creates db
+		newDB, err := create(parts[3], "lmdb")
+		if err != nil {
+			fmt.Printf("Could not create DB: %v\n", err)
+			return
+		}
+
+		// TODO: Make this multithreaded with goroutines
 	create_loop:
 		for {
 			key := selectedDBs[0].Key()
 			value := selectedDBs[0].Value()
-			fmt.Printf("\r[%v:%v] %s (%v bytes)", count, max, key, len(value))
+			fmt.Printf("\r[%v:%v] %s (%v bytes)", count+1, max, key, len(value))
 
 			// decode the image, typically a JPEG
 			img, err := imaging.Decode(bytes.NewReader(value))
@@ -398,23 +428,73 @@ switcher:
 				if !selectedDBs[0].Next() {
 					break create_loop
 				}
-				break
+				continue
 			}
 
 			// select one random operation from the todo
 			op := rand.Intn(len(todo))
 			var dst image.Image
+			w := img.Bounds().Dx()
+			h := img.Bounds().Dy()
 			switch todo[op] {
-			case "cropping":
-				//dst = imaging.Crop()
+			case "cropping", "croppings":
+				nw := 100 + rand.Intn(w-100)
+				nh := 100 + rand.Intn(h-100)
+				x := rand.Intn(w - nw)
+				y := rand.Intn(h - nh)
+				r := image.Rect(x, y, x+nw, y+nh)
+				dst = imaging.Crop(img, r)
 			case "brightness":
-				dst = imaging.AdjustBrightness(img, float64(85+rand.Intn(30)))
+				dst = imaging.AdjustBrightness(img, float64(rand.Intn(100)-50))
 			case "sharpness":
-				dst = imaging.Sharpen(img, 5)
+				dst = imaging.Sharpen(img, float64(rand.Intn(5)))
 			case "blur":
-				dst = imaging.Blur(img, 5)
+				dst = imaging.Blur(img, float64(rand.Intn(5)))
+			default:
+				fmt.Printf("Unknown operation!\n")
+				return
 			}
-			fmt.Printf("%v", dst)
+
+			// apply horizontal mirroring with 50% probability
+			// ??
+
+			img = imaging.Resize(img, destW, destH, imaging.Lanczos)
+			dst = imaging.Resize(dst, destW, destH, imaging.Lanczos)
+
+			// no need to check type assertion since imaging always returns NRGBA
+			img2, _ := img.(*image.NRGBA)
+			dst2, _ := dst.(*image.NRGBA)
+
+			d := &caffe.Datum{}
+			channels := int32(6)
+			width := int32(destW)
+			height := int32(destH)
+			label := int32(1)
+			d.Channels = &channels
+			d.Width = &width
+			d.Height = &height
+			d.Label = &label
+			// skip alpha channel (!)
+			d.Data = append(img2.Pix[0:(destW*destH)*3], dst2.Pix[0:(destW*destH)*3]...)
+
+			bts, _ := proto.Marshal(d)
+
+			err = newDB.Put(key, bts)
+			if err != nil {
+				fmt.Printf("\nCouldn't save to db: %v\n", err)
+			}
+
+			if debugMode {
+				//write images pair to disk
+				writer, _ := os.Create("image_" + strconv.FormatUint(count, 10) + "_A.jpg")
+				imaging.Encode(writer, img, imaging.JPEG)
+				writer.Close()
+
+				writer, _ = os.Create("image_" + strconv.FormatUint(count, 10) + "_B.jpg")
+				imaging.Encode(writer, dst, imaging.JPEG)
+				writer.Close()
+			}
+
 			count++
 			if count >= max {
 				break
@@ -423,7 +503,8 @@ switcher:
 				break create_loop
 			}
 		}
-		fmt.Printf("\n")
+		stop := time.Since(start)
+		fmt.Printf("\nDone in %.4v\n", stop)
 
 	case "start", "seek":
 		if len(parts) != 2 {
@@ -746,6 +827,20 @@ switcher:
 		parts := strings.Split(strings.Trim(text, " "), " ")
 		dbPath = parts[1]
 		open(parts[1])
+
+	case "create":
+		if len(parts) != 3 {
+			fmt.Printf("usage: create db <type>:<path>\n")
+			break
+		}
+		// parts have been converted to lowercase, reparse it before trying to open it
+		parts := strings.Split(strings.Trim(text, " "), " ")
+		newDB := strings.Split(parts[2], ":")
+		_, err := create(newDB[1], newDB[0])
+		if err != nil {
+			fmt.Printf("Failed: %v\n", err)
+			return
+		}
 
 	case "":
 

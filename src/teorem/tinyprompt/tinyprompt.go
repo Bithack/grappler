@@ -79,24 +79,36 @@ func GetCommand(debugMode bool) (text string) {
 
 	fmt.Print("> ")
 	var lastkey string
+	var keyPos = 0
 line_reader:
 	for {
 		c := getch()
 		switch {
 		case bytes.Equal(c, []byte{27, 91, 68}): // left
-			fmt.Printf("\b")
+			if keyPos > 0 {
+				fmt.Printf("\b")
+				keyPos--
+			}
+
 		case bytes.Equal(c, []byte{27, 91, 67}): // right
+			if keyPos < len(text) {
+				fmt.Printf(string(text[keyPos]))
+				keyPos++
+			}
+
 		case bytes.Equal(c, []byte{27, 91, 65}): // up
 			if len(history) > 0 && historyScan > 0 {
 				historyScan = historyScan - 1
 				fmt.Printf("\r> %s"+strings.Repeat(" ", len(text))+strings.Repeat("\b", len(text)), history[historyScan])
 				text = history[historyScan]
+				keyPos = len(text)
 			}
 
 		case bytes.Equal(c, []byte{27, 91, 66}): // down
 			if len(history) > 0 && historyScan < len(history)-1 {
 				historyScan = historyScan + 1
 				text = history[historyScan]
+				keyPos = len(text)
 				fmt.Printf("\r> %s", text+strings.Repeat(" ", 20)+strings.Repeat("\b", 20))
 			}
 
@@ -135,19 +147,29 @@ line_reader:
 			lastkey = "tab"
 
 		case bytes.Equal(c, []byte{127}): // backspace
-			if len(text) > 0 {
-				text = text[:len(text)-1]
-				//fmt.Printf("\b ")
-				fmt.Printf("\r> %v \b", text)
+			if keyPos > 0 {
+				if keyPos < len(text) {
+					text = text[:keyPos-1] + text[keyPos:]
+					keyPos--
+					fmt.Printf("\r> %v \b"+strings.Repeat("\b", len(text)-keyPos), text)
+				} else {
+					text = text[:len(text)-1]
+					keyPos--
+					fmt.Printf("\r> %v \b", text)
+				}
 			}
-			//fmt.Printf(chr(8) . " ";
-			//fmt.Printf("\r> %v", text)
 
 		default:
-			//fmt.Printf("Key: %v", c)
-			fmt.Printf("%s", c)
-			text = text + string(c)
-
+			if keyPos < len(text) {
+				fmt.Printf(string(c) + text[keyPos:] + strings.Repeat("\b", len(text)-keyPos))
+				text = text[:keyPos] + string(c) + text[keyPos:]
+				keyPos++
+				//insert mode
+			} else {
+				fmt.Printf("%s", c)
+				keyPos++
+				text = text + string(c)
+			}
 			/*if len(c) == 1 {
 				fmt.Printf("%c", c[0])
 				text = text + string(c)
