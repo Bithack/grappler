@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"teorem/grappler/caffe"
 	"teorem/matlab"
 	"teorem/multimatrix/matchar"
@@ -208,9 +209,9 @@ switcher:
 				s := w * h
 				fmt.Printf("Image: %v\n", bounds)
 				fmt.Printf("4 channels, %v bytes per channel\n", len(img.Pix)/4)
-				rm := mean(img.Pix[0*s : s])
-				gm := mean(img.Pix[1*s : 2*s])
-				bm := mean(img.Pix[2*s : 3*s])
+				rm := meanInt(img.Pix[0*s : s])
+				gm := meanInt(img.Pix[1*s : 2*s])
+				bm := meanInt(img.Pix[2*s : 3*s])
 				fmt.Printf("Mean values: %.4f, %.4f, %.4f\n", rm, gm, bm)
 				return
 			}
@@ -414,95 +415,157 @@ switcher:
 			return
 		}
 
-		// TODO: Make this multithreaded with goroutines
+		// append the newDB to selectedDBs, we are now reading from [0] and writing to [1]
+		selectedDBs = append(selectedDBs, newDB)
+
+		type imageJob struct {
+			key   []byte
+			value []byte
+			count uint64
+		}
+		jobs := make(chan imageJob, 100)
+
+		type jobResult struct {
+			key   []byte
+			value []byte
+		}
+		results := make(chan jobResult, 100)
+
+		var wg sync.WaitGroup
+
+		// set up some workers, reading data from the jobs channel and saving them to the result channel
+		for i := 0; i < 100; i++ {
+			wg.Add(1)
+			go func() {
+				for {
+					j, more := <-jobs
+					if more {
+
+						// DO THE WORK HERE
+
+						// decode the image, typically a JPEG
+						img, err := imaging.Decode(bytes.NewReader(j.value))
+						if err != nil {
+							break
+						}
+
+						// select one random operation from the todo
+						op := rand.Intn(len(todo))
+						var dst image.Image
+						w := img.Bounds().Dx()
+						h := img.Bounds().Dy()
+						switch todo[op] {
+						case "cropping", "croppings":
+							nw := 100 + rand.Intn(w-100)
+							nh := 100 + rand.Intn(h-100)
+							x := rand.Intn(w - nw)
+							y := rand.Intn(h - nh)
+							r := image.Rect(x, y, x+nw, y+nh)
+							dst = imaging.Crop(img, r)
+						case "brightness":
+							dst = imaging.AdjustBrightness(img, float64(rand.Intn(100)-50))
+						case "sharpness":
+							dst = imaging.Sharpen(img, float64(rand.Intn(5)))
+						case "blur":
+							dst = imaging.Blur(img, float64(rand.Intn(5)))
+						default:
+							fmt.Printf("Unknown operation!\n")
+							return
+						}
+
+						// apply horizontal mirroring with 50% probability
+						// ??
+
+						img = imaging.Resize(img, destW, destH, imaging.Lanczos)
+						dst = imaging.Resize(dst, destW, destH, imaging.Lanczos)
+
+						// no need to check type assertion since imaging always returns NRGBA
+						img2, _ := img.(*image.NRGBA)
+						dst2, _ := dst.(*image.NRGBA)
+
+						d := &caffe.Datum{}
+						channels := int32(6)
+						width := int32(destW)
+						height := int32(destH)
+						label := int32(1)
+						d.Channels = &channels
+						d.Width = &width
+						d.Height = &height
+						d.Label = &label
+						// skip alpha channel (!)
+						d.Data = append(img2.Pix[0:(destW*destH)*3], dst2.Pix[0:(destW*destH)*3]...)
+
+						var r jobResult
+						r.value, _ = proto.Marshal(d)
+						r.key = j.key
+
+						results <- r
+
+						if debugMode {
+							//write images pair to disk
+							writer, _ := os.Create("image_" + strconv.FormatUint(j.count, 10) + "_A.jpg")
+							imaging.Encode(writer, img, imaging.JPEG)
+							writer.Close()
+
+							writer, _ = os.Create("image_" + strconv.FormatUint(j.count, 10) + "_B.jpg")
+							imaging.Encode(writer, dst, imaging.JPEG)
+							writer.Close()
+						}
+
+					} else {
+						wg.Done()
+						return
+					}
+				}
+			}()
+		}
+
+		// Set up only one goroutine reading from result channel and writing to the DB
+		// It returns when the channel is closed
+		go func() {
+			wCount := 0
+			for {
+				r, more := <-results
+				if more {
+					wCount++
+					fmt.Printf("\r[%v:%v] (%v, %v) %s (%v bytes)", wCount, max, len(jobs), len(results), r.key, len(r.value))
+					err = selectedDBs[1].Put(r.key, r.value)
+					if err != nil {
+						fmt.Printf("\nCouldn't save to db: %v\n", err)
+						break
+					}
+				} else {
+					fmt.Printf("Finished writing data\n")
+					return
+				}
+			}
+		}()
+
 	create_loop:
 		for {
-			key := selectedDBs[0].Key()
-			value := selectedDBs[0].Value()
-			fmt.Printf("\r[%v:%v] %s (%v bytes)", count+1, max, key, len(value))
-
-			// decode the image, typically a JPEG
-			img, err := imaging.Decode(bytes.NewReader(value))
-			if err != nil {
-				//skip this image, proceed to next
-				if !selectedDBs[0].Next() {
-					break create_loop
-				}
-				continue
-			}
-
-			// select one random operation from the todo
-			op := rand.Intn(len(todo))
-			var dst image.Image
-			w := img.Bounds().Dx()
-			h := img.Bounds().Dy()
-			switch todo[op] {
-			case "cropping", "croppings":
-				nw := 100 + rand.Intn(w-100)
-				nh := 100 + rand.Intn(h-100)
-				x := rand.Intn(w - nw)
-				y := rand.Intn(h - nh)
-				r := image.Rect(x, y, x+nw, y+nh)
-				dst = imaging.Crop(img, r)
-			case "brightness":
-				dst = imaging.AdjustBrightness(img, float64(rand.Intn(100)-50))
-			case "sharpness":
-				dst = imaging.Sharpen(img, float64(rand.Intn(5)))
-			case "blur":
-				dst = imaging.Blur(img, float64(rand.Intn(5)))
-			default:
-				fmt.Printf("Unknown operation!\n")
-				return
-			}
-
-			// apply horizontal mirroring with 50% probability
-			// ??
-
-			img = imaging.Resize(img, destW, destH, imaging.Lanczos)
-			dst = imaging.Resize(dst, destW, destH, imaging.Lanczos)
-
-			// no need to check type assertion since imaging always returns NRGBA
-			img2, _ := img.(*image.NRGBA)
-			dst2, _ := dst.(*image.NRGBA)
-
-			d := &caffe.Datum{}
-			channels := int32(6)
-			width := int32(destW)
-			height := int32(destH)
-			label := int32(1)
-			d.Channels = &channels
-			d.Width = &width
-			d.Height = &height
-			d.Label = &label
-			// skip alpha channel (!)
-			d.Data = append(img2.Pix[0:(destW*destH)*3], dst2.Pix[0:(destW*destH)*3]...)
-
-			bts, _ := proto.Marshal(d)
-
-			err = newDB.Put(key, bts)
-			if err != nil {
-				fmt.Printf("\nCouldn't save to db: %v\n", err)
-			}
-
-			if debugMode {
-				//write images pair to disk
-				writer, _ := os.Create("image_" + strconv.FormatUint(count, 10) + "_A.jpg")
-				imaging.Encode(writer, img, imaging.JPEG)
-				writer.Close()
-
-				writer, _ = os.Create("image_" + strconv.FormatUint(count, 10) + "_B.jpg")
-				imaging.Encode(writer, dst, imaging.JPEG)
-				writer.Close()
-			}
-
+			var j imageJob
+			j.key = selectedDBs[0].Key()
+			j.value = selectedDBs[0].Value()
+			j.count = count
+			jobs <- j
 			count++
 			if count >= max {
-				break
+				break create_loop
 			}
 			if !selectedDBs[0].Next() {
 				break create_loop
 			}
 		}
+		fmt.Printf("Finished loading data\n")
+
+		// now all the jobs are sent to the channel, so close it
+		close(jobs)
+		// wait for all the workers on jobs to finish
+		wg.Wait()
+		fmt.Printf("Finished processing data\n")
+		// all workers finished, so now we can close the result channel
+		close(results)
+
 		stop := time.Since(start)
 		fmt.Printf("\nDone in %.4v\n", stop)
 
@@ -530,6 +593,10 @@ switcher:
 			break
 		}
 		switch parts[1] {
+
+		// options for printing matrixes
+		case "width":
+			maxPrintWidth, _ = strconv.Atoi(parts[2])
 
 		//debug on/off
 		case "debug":
@@ -659,7 +726,7 @@ switcher:
 			fmt.Printf("    PUT <keys>,<values> [into <namespace>.<set>]\n")
 			fmt.Printf("\n")
 			fmt.Printf("  IMAGE OPERATIONS\n")
-			fmt.Printf("    CREATE SIAMESE DATASET <db> with cropping[,brightness][,sharpness][,blur]\n")
+			fmt.Printf("    GENERATE SIAMESE DATASET <db> with cropping[,brightness][,sharpness][,blur]\n")
 			fmt.Printf("\n")
 			fmt.Printf("  INFO\n")
 			fmt.Printf("    WHO\n")
@@ -780,6 +847,12 @@ switcher:
 
 	case "close":
 		for _, db := range selectedDBs {
+			for i := range allDBs {
+				if db == allDBs[i] {
+					allDBs = append(allDBs[:i], allDBs[i+1:]...)
+					break
+				}
+			}
 			db.Close()
 		}
 		selectedDBs = selectedDBs[:0]
@@ -929,7 +1002,7 @@ func doTest(expr string) int {
 
 }
 
-func mean(data []uint8) (v float64) {
+func meanInt(data []uint8) (v float64) {
 	for i := range data {
 		v += float64(data[i])
 	}

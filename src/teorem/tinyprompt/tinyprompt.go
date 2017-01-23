@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"os"
@@ -74,9 +76,23 @@ func PrintHistory() {
 	}
 }
 
+func terminalWidth() (w int) {
+	cmd := exec.Command("stty", "size")
+	cmd.Stdin = os.Stdin
+	out, err := cmd.Output()
+	if err != nil {
+		return 0
+	}
+	parts := strings.Split(strings.Trim(string(out), "\n"), " ")
+	w, err = strconv.Atoi(parts[1])
+	if err != nil {
+		return 0
+	}
+	return
+}
+
 // GetCommand reads and returns a new command from the prompt
 func GetCommand(debugMode bool) (text string) {
-
 	fmt.Print("> ")
 	var lastkey string
 	var keyPos = 0
@@ -84,6 +100,11 @@ line_reader:
 	for {
 		c := getch()
 		switch {
+		case bytes.Equal(c, []byte{3}):
+			fmt.Printf("\r> " + strings.Repeat(" ", len(text)) + strings.Repeat("\b", len(text)))
+			text = ""
+			keyPos = 0
+
 		case bytes.Equal(c, []byte{27, 91, 68}): // left
 			if keyPos > 0 {
 				fmt.Printf("\b")
@@ -138,9 +159,22 @@ line_reader:
 					//file or string match???
 					fmt.Printf(matches[0][len(dir):] + "/")
 					text = text + matches[0][len(dir):] + "/"
+					keyPos = len(text)
 				}
 				if len(matches) > 1 && lastkey == "tab" {
-					fmt.Printf("\n%v\n", matches)
+					// second tab press, display list of matches
+					fmt.Printf("\n")
+					for i := range matches {
+						_, f := filepath.Split(matches[i])
+						s, err := os.Stat(matches[i])
+						if err == nil && s.IsDir() {
+							fmt.Printf("%v/\n", f)
+						} else {
+							fmt.Printf("%v\n", f)
+						}
+
+					}
+
 					fmt.Printf("> %s", text)
 				}
 			}
@@ -170,6 +204,7 @@ line_reader:
 				keyPos++
 				text = text + string(c)
 			}
+			//	fmt.Printf("Uncaught: %v\n", c)
 			/*if len(c) == 1 {
 				fmt.Printf("%c", c[0])
 				text = text + string(c)

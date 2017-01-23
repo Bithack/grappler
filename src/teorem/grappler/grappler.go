@@ -51,6 +51,8 @@ var dbInfos []dbInfo
 var limit uint64
 var writeFormat string
 
+var maxPrintWidth = 10
+
 var dbPath string
 var lastKey []byte
 var lastValue []byte

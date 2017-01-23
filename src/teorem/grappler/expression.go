@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strings"
 
 	"strconv"
@@ -24,10 +25,23 @@ var tempIndex int
 var returnMatrixes = make(map[string]*mat64.Dense)
 var returnMatrixesOrder = make([]string, 0)
 
+var limitLow, limitHigh int
+
 func addReturn(s string, m *mat64.Dense) {
 	returnMatrixes[s] = m
 	returnMatrixesOrder = append(returnMatrixesOrder, s)
 }
+
+func rows(a *mat64.Dense) (r int) {
+	r, _ = a.Dims()
+	return
+}
+
+func cols(a *mat64.Dense) (c int) {
+	_, c = a.Dims()
+	return
+}
+
 func getScalar(a *mat64.Dense) float64 {
 	return a.At(0, 0)
 }
@@ -43,10 +57,120 @@ func checkDims(a *mat64.Dense, r, c int) bool {
 	}
 	return true
 }
+
+func parseMatrixSubindex(mat *mat64.Dense, args string) (result *mat64.Dense, err error) {
+	argv := strings.Split(args, ",")
+	switch len(argv) {
+	case 1:
+		//linear indexing
+		if argv[0] == ":" {
+			// Return whole matrix as one column
+			r, c := mat.Dims()
+			result = mat64.NewDense(r*c, 1, mat.RawMatrix().Data)
+			return
+		}
+		var a2 *mat64.Dense
+		a2, err = parseExpression(argv[0])
+		if err != nil {
+			return nil, err
+		}
+		if isScalar(a2) {
+			// Single index returns a single value
+			index := int(getScalar(a2))
+			d := mat.RawMatrix().Data
+			if index < 0 || index >= len(d) {
+				return nil, errors.New("Index exceeds matrix dimensions")
+			}
+			result = mat64.NewDense(1, 1, []float64{d[index]})
+		}
+		r, c := a2.Dims()
+		// any matrix with valid indexes, reuse a2 for storing values
+		d := mat.RawMatrix().Data
+		for i := 0; i < r; i++ {
+			for j := 0; j < c; j++ {
+				index := int(a2.At(i, j))
+				if index < 0 || index >= len(d) {
+					return nil, errors.New("Index exceeds matrix dimensions")
+				}
+				a2.Set(i, j, d[index])
+			}
+		}
+		result = a2
+
+	case 2:
+		r, c := mat.Dims()
+		limitLow = 0
+		limitHigh = r - 1
+		a0, err := parseExpression(argv[0])
+		if err != nil {
+			return nil, err
+		}
+		limitHigh = c - 1
+		a1, err := parseExpression(argv[1])
+		if err != nil {
+			return nil, err
+		}
+		if rows(a0) != 1 || rows(a1) != 1 {
+			return nil, errors.New("Two-dimensinal matrix indexing only accepts vectors as argument")
+		}
+		result = mat64.NewDense(cols(a0), cols(a1), nil)
+		for i := 0; i < cols(a0); i++ {
+			for j := 0; j < cols(a1); j++ {
+				y := int(round(a0.At(0, i)))
+				x := int(round(a1.At(0, j)))
+				if y < 0 || y >= r || x < 0 || x >= c {
+					return nil, errors.New("Index exceeds matrix dimensions")
+				}
+				result.Set(i, j, mat.At(y, x))
+			}
+		}
+		return result, nil
+
+	default:
+		return nil, errors.New("To many variables for matrix subindexing")
+	}
+	return
+}
+
+func checkArguments(fname string, argv []*mat64.Dense, types []string) (err error) {
+	var required int
+	for j := range types {
+		if strings.HasPrefix(types[j], "optional") {
+			required++
+		}
+	}
+	if len(argv) < required || len(argv) > len(types) {
+		return errors.New("Incorrect number of arguments to " + fname)
+	}
+	for i := range argv {
+		switch types[i] {
+		case "positive:integer", "optional:positive:integer":
+			if !isScalar(argv[i]) || getScalar(argv[i]) != round(getScalar(argv[i])) || getScalar(argv[i]) < 1 {
+				return errors.New("Expected positive integer as parameter " + strconv.Itoa(i+1) + " in call to " + fname)
+			}
+		case "integer", "optional:integer":
+			if !isScalar(argv[i]) || getScalar(argv[i]) != round(getScalar(argv[i])) {
+				return errors.New("Expected integer as parameter " + strconv.Itoa(i+1) + " in call to " + fname)
+			}
+		case "scalar", "optional:scalar":
+			if !isScalar(argv[i]) {
+				return errors.New("Expected scalar as parameter " + strconv.Itoa(i+1) + " in call to " + fname)
+			}
+		case "matrix", "optional:matrix":
+		}
+	}
+	return
+}
+
 func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 
 	if debugMode {
 		fmt.Printf("parseFunctionCall %s\n", f)
+	}
+
+	mat, isMatrix := matrixes[f]
+	if isMatrix {
+		return parseMatrixSubindex(mat, args)
 	}
 
 	argv := strings.Split(args, ",")
@@ -57,10 +181,11 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 			return nil, errors.New("Invalid argument to " + f + "(): " + err.Error())
 		}
 	}
+
 	switch f {
 
 	// a bunch of simple single valued functions
-	case "sin", "sinh", "asin", "asinh", "cos", "cosh", "acos", "acosh", "tan", "tanh", "atan", "atanh", "abs", "log", "sqrt", "round", "floor", "ceil":
+	case "exp", "sin", "sinh", "asin", "asinh", "cos", "cosh", "acos", "acosh", "tan", "tanh", "atan", "atanh", "abs", "log", "sqrt", "round", "floor", "ceil":
 		if len(argv2) != 1 {
 			return nil, errors.New("expected one matrix argument to " + f + "()")
 		}
@@ -104,13 +229,10 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 					v = math.Floor(v)
 				case "ceil":
 					v = math.Ceil(v)
+				case "exp":
+					v = math.Exp(v)
 				case "round":
-					if v < 0 {
-						v = math.Ceil(v - 0.5)
-					} else {
-						v = math.Floor(v + 0.5)
-					}
-
+					v = round(v)
 				}
 				result.Set(i, j, v)
 			}
@@ -140,7 +262,7 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 			return nil, errors.New("ones() expects scalar values as parameters")
 		}
 		r := int(math.Floor(getScalar(argv2[0])))
-		c := 1
+		c := r
 		if len(argv) == 2 {
 			c = int(math.Floor(getScalar(argv2[1])))
 		}
@@ -155,7 +277,7 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 			return nil, errors.New("ones() expects scalar values as parameters")
 		}
 		r := int(math.Floor(getScalar(argv2[0])))
-		c := 1
+		c := r
 		if len(argv) == 2 {
 			c = int(math.Floor(getScalar(argv2[1])))
 		}
@@ -166,7 +288,7 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 			return nil, errors.New("random expects scalar values as parameters")
 		}
 		r := int(math.Floor(getScalar(argv2[0])))
-		c := 1
+		c := r
 		if len(argv) == 2 {
 			c = int(math.Floor(getScalar(argv2[1])))
 		}
@@ -175,6 +297,94 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 			floats[i] = rand.Float64()
 		}
 		result = mat64.NewDense(r, c, floats)
+
+	case "flip":
+		err := checkArguments("flip(X,dim)", argv2, []string{"matrix", "optional:positive:integer"})
+		if err != nil {
+			return nil, err
+		}
+		r, c := argv2[0].Dims()
+		result = mat64.NewDense(r, c, nil)
+		switch {
+		case len(argv2) < 2 || getScalar(argv2[1]) == 1:
+			// default, flip rows
+			for i := 0; i < r; i++ {
+				//TODO
+			}
+		case getScalar(argv2[1]) == 2:
+			// flip cols
+			for i := 0; i < c; i++ {
+				//TODO
+			}
+		}
+
+	case "sort":
+		err := checkArguments("sort(X,dim)", argv2, []string{"matrix", "optional:positive:integer"})
+		if err != nil {
+			return nil, err
+		}
+		r, c := argv2[0].Dims()
+		switch {
+		case (len(argv2) < 2 && r == 1) || (len(argv2) == 2 && getScalar(argv2[1]) == 2):
+			// sort rows
+			result = argv2[0]
+			for i := 0; i < r; i++ {
+				sort.Float64s(result.RawRowView(i))
+			}
+		default:
+			// sort cols
+			m2 := mat64.DenseCopyOf(argv2[0].T())
+			for i := 0; i < c; i++ {
+				sort.Float64s(m2.RawRowView(i))
+			}
+			result = mat64.DenseCopyOf(m2.T())
+
+		}
+
+	case "var":
+		// var(X), returns the variances of every column in X
+		// sum (x_i - mean(X))^2 / (n-1)
+		err := checkArguments("var(X)", argv2, []string{"matrix"})
+		if err != nil {
+			return nil, err
+		}
+		r, c := argv2[0].Dims()
+		mean := mean(argv2[0])
+		sum := mat64.NewVector(c, nil)
+		for i := 0; i < c; i++ {
+			var a mat64.Vector
+			a.SubVec(argv2[0].RowView(i), mean.RowView(0))
+			a.MulElemVec(&a, &a)
+			sum.AddVec(sum, &a)
+		}
+		result = mat64.NewDense(1, c, sum.RawVector().Data)
+		result.Scale(1/(float64(r)-1), result)
+
+	case "hist":
+		// hist(X, n)
+		// computes histograms of every column in X sorted into n bins
+		// returns a matrix where row i contains the bins for column i in X
+		if len(argv2) != 2 || !isScalar(argv2[1]) {
+			return nil, errors.New("invalid arguments to hist(X, n)")
+		}
+		r, c := argv2[0].Dims()
+		n := int(math.Floor(getScalar(argv2[1])))
+		vmin := mat64.Min(argv2[0])
+		vmax := mat64.Max(argv2[0])
+		binSize := (vmax - vmin) / float64(n)
+		result = mat64.NewDense(c, n, nil)
+		for i := 0; i < c; i++ {
+			for j := 0; j < r; j++ {
+				v := argv2[0].At(j, i)
+				if v == vmax {
+					bin := n - 1
+					result.Set(i, bin, result.At(i, bin)+1)
+				} else {
+					bin := int((v - vmin) / binSize)
+					result.Set(i, bin, result.At(i, bin)+1)
+				}
+			}
+		}
 
 	case "bhtsne", "bh_tsne":
 		//bh_tsne(data, no_dims, theta, perplexity)
@@ -292,6 +502,7 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 		ok := pc.PrincipalComponents(argv2[0], nil)
 		vecs = pc.Vectors(vecs)
 		vars = pc.Vars(vars)
+
 		if !ok {
 			return nil, errors.New("internal error in pca()")
 		}
@@ -316,17 +527,12 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 		//proj.Mul(iris, vecs.View(0, 0, d, k))
 
 	case "mean":
-		//mean of matrix calculates returns row vector with means for ever column
-		//first calc transpose matrix and then use RawRowView to get the float64 values
+		// mean of matrix calculates returns row vector with means for ever column
+		// first calc transpose matrix and then use RawRowView to get the float64 values
 		if len(argv2) != 1 {
 			return nil, errors.New("expected one matrix argument to mean()")
 		}
-		_, c := argv2[0].Dims()
-		a := mat64.DenseCopyOf(argv2[0].T())
-		result = mat64.NewDense(1, c, nil)
-		for i := 0; i < c; i++ {
-			result.Set(0, i, stat.Mean(a.RawRowView(i), nil))
-		}
+		result = mean(argv2[0])
 
 	case "min":
 		if len(argv2) != 1 {
@@ -409,6 +615,29 @@ func clearParser() {
 	returnMatrixesOrder = returnMatrixesOrder[:0]
 }
 
+func parseColonExpression(expr string) (result *mat64.Dense, err error) {
+	parts := strings.Split(expr, ":")
+	if len(parts) == 2 {
+		var a, b float64
+		var e1, e2 error
+		if parts[0] == "" && parts[1] == "" {
+			// single ":"
+			a, b = float64(limitLow), float64(limitHigh)
+		} else {
+			a, e1 = strconv.ParseFloat(parts[0], 64)
+			b, e2 = strconv.ParseFloat(parts[1], 64)
+		}
+		if e1 == nil && e2 == nil && a <= b {
+			result = mat64.NewDense(1, int(b-a)+1, nil)
+			for i := 0; i <= int(b-a); i++ {
+				result.Set(0, i, a+float64(i))
+			}
+			return
+		}
+	}
+	return nil, errors.New("Invalid colon expression")
+}
+
 func parseExpression(expr string) (result *mat64.Dense, err error) {
 
 	if debugMode {
@@ -428,6 +657,7 @@ func parseExpression(expr string) (result *mat64.Dense, err error) {
 		var c int
 		for i := range rows {
 			cols := strings.Fields(rows[i])
+			// cols could be scalar, or a:b, or a:b:c...
 			if c == 0 {
 				c = len(cols)
 				result = mat64.NewDense(len(rows), c, nil)
@@ -445,10 +675,10 @@ func parseExpression(expr string) (result *mat64.Dense, err error) {
 		return
 	}
 
-	//remove all spaces from string
-	expr = strings.Replace(expr, " ", "", -1)
+	// now remove ALL spaces from string
+	//expr = strings.Replace(expr, " ", "", -1)
 
-	//simple numeric value, "3.1415"
+	// simple numeric value, "3.1415"
 	f, err := strconv.ParseFloat(expr, 64)
 	if err == nil {
 		//convert to 1x1 matrix
@@ -502,12 +732,12 @@ func parseExpression(expr string) (result *mat64.Dense, err error) {
 		}
 	}
 
-	// FUNCTION CALLS
+	// FUNCTION CALLS AND MATRIX SUBINDEXING
 
-	// find first inner function call, "rand(expr,expr,expr)"
-	// any parenthesis groups within the arguments should be cleared by now :)
+	// find first inner function call "rand(expr,expr,expr)" or matrix subindex "A(2)", "A(1,2)", "A(:,:)"
+	// any parenthesis groups within the arguments should be cleared by now
 
-	re = regexp.MustCompile("([_a-z]+)\\(([^\\)\\(]*)\\)")
+	re = regexp.MustCompile("([_a-zA-Z]+)\\(([^\\)\\(]*)\\)")
 	re.Longest()
 	loc = re.FindStringSubmatchIndex(expr)
 	if loc != nil {
@@ -524,6 +754,12 @@ func parseExpression(expr string) (result *mat64.Dense, err error) {
 	}
 
 	// OPERATORS
+
+	// a:b, a:b:c
+	test := strings.Split(expr, ":")
+	if len(test) == 2 || len(test) == 3 {
+		return parseColonExpression(expr)
+	}
 
 	//split by + groups. if more than 1: parse them, check if dimensions match, then add it together
 	terms, r, c, err := splitAndCheckEqualDim(expr, "+")
@@ -603,7 +839,8 @@ func printMatrix(mat string) {
 	case r == 1 && c == 1:
 		fmt.Printf("%s = %.4f\n", mat, matrixes[mat].At(0, 0))
 	default:
-		fa := mat64.Formatted(matrixes[mat], mat64.Excerpt(5))
+		s := int(maxPrintWidth / 2)
+		fa := mat64.Formatted(matrixes[mat], mat64.Excerpt(s))
 		///mat64.Format(matrixes[mat], )
 		fmt.Printf("%s =\n%.4f\n", mat, fa)
 	}
@@ -669,4 +906,11 @@ func float64bytes(float float64) (bs []byte) {
 	bs = make([]byte, 8)
 	binary.LittleEndian.PutUint64(bs, bits)
 	return
+}
+
+func round(v float64) float64 {
+	if v < 0 {
+		return math.Ceil(v - 0.5)
+	}
+	return math.Floor(v + 0.5)
 }

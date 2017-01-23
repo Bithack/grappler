@@ -19,6 +19,7 @@ type MatrixType uint8
 const (
 	NUMERIC MatrixType = 0
 	CHAR               = 1
+	LOGIC              = 2
 )
 
 // MultiMatrix is the struct
