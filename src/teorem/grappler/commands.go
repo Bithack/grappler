@@ -167,7 +167,10 @@ switcher:
 			fmt.Printf("only supports retrieving from one db, select one with \"use\"\n")
 			break
 		}
+
 		var err error
+
+		// SPECIAL CASE FOR AEROSPIKE DB
 		if len(parts) == 4 && parts[2] == "from" {
 			if selectedDBs[0].Identity() != "aerospike" {
 				fmt.Printf("Syntax only available for aerospike dbs\n")
@@ -184,15 +187,22 @@ switcher:
 			fmt.Printf("%+v\n", record)
 			break
 		}
+
+		switch parts[1] {
+		case "random":
+			lastKey, lastValue, err = selectedDBs[0].GetRandom()
+		default:
+			lastKey, lastValue, err = selectedDBs[0].Get([]byte(parts[1]))
+		}
+		if err != nil {
+			fmt.Printf("GET failed: %v\n", err)
+			break
+		}
+
 		if len(parts) == 4 && parts[2] == "as" {
 			switch parts[3] {
 			case "image":
-				_, value, err := selectedDBs[0].Get([]byte(parts[1]))
-				if err != nil {
-					fmt.Printf("Failed: %v", err)
-					return
-				}
-				i, err := imaging.Decode(bytes.NewReader(value))
+				i, err := imaging.Decode(bytes.NewReader(lastValue))
 				if err != nil {
 					fmt.Printf("Failed: %v", err)
 					return
@@ -216,11 +226,7 @@ switcher:
 				return
 			}
 		}
-		lastKey, lastValue, err = selectedDBs[0].Get([]byte(parts[1]))
-		if err != nil {
-			fmt.Printf("Failed: %v\n", err)
-			break
-		}
+
 		if selectedDBs[0].Identity() == "lmdb" {
 			d := &caffe.Datum{}
 			err = proto.Unmarshal(lastValue, d)
@@ -424,6 +430,7 @@ switcher:
 			count uint64
 		}
 		jobs := make(chan imageJob, 100)
+		randomImages := make(chan imageJob, 100)
 
 		type jobResult struct {
 			key   []byte
@@ -434,7 +441,7 @@ switcher:
 		var wg sync.WaitGroup
 
 		// set up some workers, reading data from the jobs channel and saving them to the result channel
-		for i := 0; i < 100; i++ {
+		for i := 0; i < workers; i++ {
 			wg.Add(1)
 			go func() {
 				for {
@@ -449,32 +456,50 @@ switcher:
 							break
 						}
 
-						// select one random operation from the todo
-						op := rand.Intn(len(todo))
+						// Split 50%/50% probability between producing similar and dissimilar pairs
+						// label=1 -> similar
+						// label=0 -> dissimilar
 						var dst image.Image
-						w := img.Bounds().Dx()
-						h := img.Bounds().Dy()
-						switch todo[op] {
-						case "cropping", "croppings":
-							nw := 100 + rand.Intn(w-100)
-							nh := 100 + rand.Intn(h-100)
-							x := rand.Intn(w - nw)
-							y := rand.Intn(h - nh)
-							r := image.Rect(x, y, x+nw, y+nh)
-							dst = imaging.Crop(img, r)
-						case "brightness":
-							dst = imaging.AdjustBrightness(img, float64(rand.Intn(100)-50))
-						case "sharpness":
-							dst = imaging.Sharpen(img, float64(rand.Intn(5)))
-						case "blur":
-							dst = imaging.Blur(img, float64(rand.Intn(5)))
-						default:
-							fmt.Printf("Unknown operation!\n")
-							return
-						}
+						var pairLabel = rand.Intn(2)
+						switch pairLabel {
+						case 0:
+							// DISSIMILAR PAIR
+							// read another one from randomImages
+							// the random image could be the same as img! with a large dataset it is probably acceptably
+							for {
+								j := <-randomImages
+								dst, err = imaging.Decode(bytes.NewReader(j.value))
+								if err == nil {
+									break
+								}
+							}
 
-						// apply horizontal mirroring with 50% probability
-						// ??
+						case 1:
+							// SIMILAR PAIR
+							// select one random operation from the todo
+							op := rand.Intn(len(todo))
+							w := img.Bounds().Dx()
+							h := img.Bounds().Dy()
+							switch todo[op] {
+							case "cropping", "croppings":
+								nw := 100 + rand.Intn(w-100)
+								nh := 100 + rand.Intn(h-100)
+								x := rand.Intn(w - nw)
+								y := rand.Intn(h - nh)
+								r := image.Rect(x, y, x+nw, y+nh)
+								dst = imaging.Crop(img, r)
+							case "brightness":
+								dst = imaging.AdjustBrightness(img, float64(rand.Intn(100)-50))
+							case "sharpness":
+								dst = imaging.Sharpen(img, float64(rand.Intn(5)))
+							case "blur":
+								dst = imaging.Blur(img, float64(rand.Intn(5)))
+							default:
+								fmt.Printf("Unknown operation!\n")
+								return
+							}
+							// apply horizontal mirroring with 50% probability ??
+						}
 
 						img = imaging.Resize(img, destW, destH, imaging.Lanczos)
 						dst = imaging.Resize(dst, destW, destH, imaging.Lanczos)
@@ -487,7 +512,7 @@ switcher:
 						channels := int32(6)
 						width := int32(destW)
 						height := int32(destH)
-						label := int32(1)
+						label := int32(pairLabel)
 						d.Channels = &channels
 						d.Width = &width
 						d.Height = &height
@@ -503,11 +528,13 @@ switcher:
 
 						if debugMode {
 							//write images pair to disk
-							writer, _ := os.Create("image_" + strconv.FormatUint(j.count, 10) + "_A.jpg")
+							n := fmt.Sprintf("image_%v_%v_A.jpg", j.count, pairLabel)
+							writer, _ := os.Create(n)
 							imaging.Encode(writer, img, imaging.JPEG)
 							writer.Close()
 
-							writer, _ = os.Create("image_" + strconv.FormatUint(j.count, 10) + "_B.jpg")
+							n = fmt.Sprintf("image_%v_%v_B.jpg", j.count, pairLabel)
+							writer, _ = os.Create(n)
 							imaging.Encode(writer, dst, imaging.JPEG)
 							writer.Close()
 						}
@@ -523,25 +550,50 @@ switcher:
 		// Set up only one goroutine reading from result channel and writing to the DB
 		// It returns when the channel is closed
 		go func() {
+			grLog("DB writer started\n")
 			wCount := 0
 			for {
 				r, more := <-results
 				if more {
 					wCount++
-					fmt.Printf("\r[%v:%v] (%v, %v) %s (%v bytes)", wCount, max, len(jobs), len(results), r.key, len(r.value))
+					fmt.Printf("\r[%v:%v] (random: %v, jobs: %v, results: %v) %s (%v bytes)", wCount, max, len(randomImages), len(jobs), len(results), r.key, len(r.value))
 					err = selectedDBs[1].Put(r.key, r.value)
 					if err != nil {
 						fmt.Printf("\nCouldn't save to db: %v\n", err)
 						break
 					}
 				} else {
-					fmt.Printf("Finished writing data\n")
+					wg.Done()
+					grLog("DB writer finished\n")
 					return
 				}
 			}
 		}()
 
-	create_loop:
+		// set up a goroutine to keep the channel randomImages filled
+		// to close it send a value to the quit channel
+		noMoreRandom := make(chan int)
+		go func() {
+			grLog("Random data loader started\n")
+			for {
+				select {
+				case <-noMoreRandom:
+					grLog("Random data loader finished\n")
+					return
+				default:
+					// if there is room, add to the random channel
+					if len(randomImages) < 100 {
+						var j imageJob
+						j.key, j.value, err = selectedDBs[0].GetRandom()
+						if err == nil {
+							randomImages <- j
+						}
+					}
+				}
+			}
+		}()
+
+		grLog("Data loader started\n")
 		for {
 			var j imageJob
 			j.key = selectedDBs[0].Key()
@@ -550,21 +602,24 @@ switcher:
 			jobs <- j
 			count++
 			if count >= max {
-				break create_loop
+				break
 			}
 			if !selectedDBs[0].Next() {
-				break create_loop
+				break
 			}
 		}
-		fmt.Printf("Finished loading data\n")
+		grLog("Data loader finished\n")
 
-		// now all the jobs are sent to the channel, so close it
-		close(jobs)
-		// wait for all the workers on jobs to finish
-		wg.Wait()
-		fmt.Printf("Finished processing data\n")
+		close(jobs)       // now all the jobs are sent to the channel, so close it
+		wg.Wait()         // wait for all the workers on jobs to finish
+		noMoreRandom <- 1 // close the randomImages producer
+
+		grLog("Finished processing data\n")
+
 		// all workers finished, so now we can close the result channel
+		wg.Add(1)
 		close(results)
+		wg.Wait() // wait for DB writer to finish
 
 		stop := time.Since(start)
 		fmt.Printf("\nDone in %.4v\n", stop)
@@ -584,20 +639,30 @@ switcher:
 			break
 		}
 
-	case "dump":
-		//dump data to screen or file from one or several dbs
-
 	case "set":
-		if len(parts) != 3 {
-			fmt.Printf("usage: set option value\n")
+		if len(parts) < 2 || len(parts) > 3 {
+			fmt.Printf("usage: set option [value]\n")
+			break
+		}
+		if len(parts) == 2 {
+			switch parts[1] {
+			case "workers":
+				fmt.Printf("%v\n", workers)
+			case "width":
+				fmt.Printf("%v\n", maxPrintWidth)
+			case "debug":
+				fmt.Printf("%v\n", debugMode)
+			case "limit":
+				fmt.Printf("%v\n", limit)
+			}
 			break
 		}
 		switch parts[1] {
-
+		case "workers":
+			workers, _ = strconv.Atoi(parts[2])
 		// options for printing matrixes
 		case "width":
 			maxPrintWidth, _ = strconv.Atoi(parts[2])
-
 		//debug on/off
 		case "debug":
 			if parts[2] == "on" {
@@ -605,14 +670,12 @@ switcher:
 			} else {
 				debugMode = false
 			}
-
 		case "limit":
 			l, err := strconv.Atoi(parts[2])
 			if err != nil {
 				fmt.Printf("malformed number\n")
 			}
 			limit = uint64(l)
-
 		//adds a filter to the key before it is printed
 		case "filter":
 			//expect [i:j], [i:], [:j]
@@ -924,10 +987,6 @@ switcher:
 		}
 		for m := range matrixes {
 			r, c := matrixes[m].Dims()
-			fmt.Printf("%s"+strings.Repeat(" ", 10-len(m))+"Float64      Dims(%v, %v)\n", m, r, c)
-		}
-		for m := range tempMatrixes {
-			r, c := tempMatrixes[m].Dims()
 			fmt.Printf("%s"+strings.Repeat(" ", 10-len(m))+"Float64      Dims(%v, %v)\n", m, r, c)
 		}
 		for m := range matrixesChar {

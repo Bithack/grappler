@@ -9,6 +9,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"time"
 
@@ -62,6 +63,10 @@ var debugMode = false
 
 var matrixes = make(map[string]*mat64.Dense)
 var matrixesChar = make(map[string]*matchar.Matchar)
+
+// the number of workers to use for the heavy stuff (like generate dataset)
+// defaults to number of logical cpus
+var workers = runtime.NumCPU()
 
 type grapplerConfig struct {
 	Path    []string `json:"path"`
@@ -184,6 +189,12 @@ func open(path string) {
 		}
 	}
 	fmt.Printf("Could not open database %s\n", path)
+}
+
+func grLog(message string) {
+	if debugMode {
+		fmt.Printf(message)
+	}
 }
 
 /*

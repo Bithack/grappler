@@ -12,10 +12,12 @@ import (
 	"fmt"
 	"image"
 	"io/ioutil"
+	"math/rand"
 	"os"
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,6 +57,7 @@ type ADB struct {
 	fileHandle  *os.File
 	fileScanner *bufio.Scanner
 	fileKey     []byte
+	fileKeyCol  int
 	fileValue   []byte
 	fileLines   uint64
 
@@ -122,6 +125,20 @@ func (db *ADB) GetRecord(key []byte) (record *aerospike.Record, err error) {
 	default:
 		return nil, errors.New("Not supported")
 	}
+}
+
+// GetRandom returns a random key value pair from the database
+// Only implemented for folder databases (typically a directory with image files)
+func (db *ADB) GetRandom() (key []byte, value []byte, err error) {
+	switch db.identity {
+	case "folder":
+		i := rand.Int63n(int64(len(db.folderFiles)) - 1)
+		key = []byte(db.folderFiles[i].Name())
+		value, err = ioutil.ReadFile(filepath.Join(db.path, db.folderFiles[i].Name()))
+	default:
+		return nil, nil, errors.New("not implemented for this db")
+	}
+	return
 }
 
 // Get returns the value of a key, without moving the iterator
@@ -382,8 +399,24 @@ func (db *ADB) Next() bool {
 	case "file":
 		db.fileScanner.Scan()
 		row := strings.Split(db.fileScanner.Text(), " ")
-		db.fileKey = []byte(row[0])
-		db.fileValue = []byte(strings.Join(row[1:], " "))
+		if db.fileKeyCol == -1 {
+			// try to detect location of key (if any) and values
+			for i := range row {
+				_, err := strconv.ParseFloat(row[i], 64)
+				if err != nil {
+					//not a float, assume it is the key
+					db.fileKeyCol = i
+					break
+				}
+			}
+		}
+		if db.fileKeyCol != -1 {
+			db.fileKey = []byte(row[db.fileKeyCol])
+			db.fileValue = []byte(strings.Join(append(row[0:db.fileKeyCol], row[db.fileKeyCol:]...), " "))
+		} else {
+			db.fileValue = []byte(strings.Join(row, " "))
+		}
+
 	case "leveldb":
 		return db.levelIterator.Next()
 	case "lmdb":
@@ -447,7 +480,7 @@ func Create(path string, dbType string) (db *ADB, err error) {
 			return nil, err
 		}
 		db.lmdbEnv.SetMaxDBs(10)
-		db.lmdbEnv.SetMapSize(10000000000) // 10 GB
+		db.lmdbEnv.SetMapSize(100000000000) // 100 GB...
 		err := os.MkdirAll(path, 0700)
 		if err != nil {
 			db.lmdbEnv.Close()
@@ -498,6 +531,7 @@ func Open(path string, dbType string) (db *ADB, err error) {
 		}
 
 	case "file":
+		db.fileKeyCol = -1
 		db.fileHandle, err = os.Open(db.path)
 		if err != nil {
 			return nil, err
