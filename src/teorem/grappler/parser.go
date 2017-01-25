@@ -607,53 +607,21 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 	return
 }
 
-func split(expr string, sep string) (terms2 []*mat64.Dense, err error) {
-	terms := strings.Split(expr, sep)
-	if len(terms) > 1 {
-		terms2 = make([]*mat64.Dense, len(terms))
-		for i := range terms {
-			terms2[i], err = parseExpression(terms[i])
-			if err != nil {
-				return nil, err
-			}
-		}
-	}
-	return
-}
-
-// Splits a string, parses the subExpressions and checks if all dimensions match, or if a row/vector length matches
-// Used by: - operator
-func splitAndCheck(expr string, sep string) (terms2 []*mat64.Dense, lastr int, lastc int, err error) {
+func splitAndParse(expr string, sep string, acceptEmpty bool) (terms2 []*mat64.Dense, err error) {
 	terms := strings.Split(expr, sep)
 	if len(terms) > 1 {
 		terms2 = make([]*mat64.Dense, len(terms))
 		for i := range terms {
 			if len(terms[i]) == 0 {
-				//accepts first term missing (-4, +3)
-				if i == 0 {
+				if acceptEmpty && i == 0 { //accepts first term missing (-4, +3)
 					continue
 				}
-				return nil, 0, 0, errors.New("Missing term")
+				return nil, errors.New("Missing term")
 			}
 			terms2[i], err = parseExpression(terms[i])
 			if err != nil {
-				return
+				return nil, err
 			}
-			r, c := terms2[i].Dims()
-			// only check from second term and on
-			if lastr != 0 {
-				//check for valid cases
-				switch {
-				case r == 1 && c == 1:
-				case r == 1 && c == lastc:
-				case c == 1 && r == lastr:
-				case r == lastr && c == lastr:
-				default:
-					return nil, r, c, errors.New("Dimension mismatch")
-				}
-			}
-			lastr = r
-			lastc = c
 		}
 	}
 	return
@@ -734,8 +702,7 @@ func parseExpression(expr string) (result *mat64.Dense, err error) {
 
 	// ATOMS
 
-	// matrix declaration [ ]
-	// no nesting of brackets allowed
+	// matrix declaration [expr;expr;...;expr]
 	if len(expr) > 1 && expr[0:1] == "[" && expr[len(expr)-1:] == "]" {
 		//rows seperated with ;
 		rows := strings.Split(expr[1:len(expr)-1], ";")
@@ -750,11 +717,14 @@ func parseExpression(expr string) (result *mat64.Dense, err error) {
 				return nil, errors.New("Different number of columns in matrix declaration")
 			}
 			for j := range cols {
-				v, err := strconv.ParseFloat(cols[j], 64)
+				v, err := parseExpression(cols[j])
 				if err != nil {
-					return nil, errors.New("Error parsing float")
+					return nil, err
 				}
-				result.Set(i, j, v)
+				if !isScalar(v) {
+					return nil, errors.New("Only scalar values supported within a matrix declaration")
+				}
+				result.Set(i, j, getScalar(v))
 			}
 		}
 		return
@@ -846,27 +816,50 @@ func parseExpression(expr string) (result *mat64.Dense, err error) {
 		return parseColonExpression(expr)
 	}
 
-	//split by + groups. if more than 1: parse them, check if dimensions match, then add it together
-	terms, r, c, err := splitAndCheckEqualDim(expr, "+")
+	// split by + groups
+	terms, err := splitAndParse(expr, "+", true)
 	if err != nil {
 		return nil, err
 	}
 	if terms != nil {
-		result = mat64.NewDense(r, c, nil)
-		for i := range terms {
-			result.Add(result, terms[i])
+		// initialize result to first the term, dimensions will stay the same
+		r, c := terms[0].Dims()
+		result = mat64.NewDense(r, c, terms[0].RawMatrix().Data)
+		for i := 1; i < len(terms); i++ {
+			r2, c2 := terms[i].Dims()
+			switch {
+			case r2 == 1 && c2 == 1:
+				//scalar addition (to every element)
+				for u := 0; u < r; u++ {
+					for v := 0; v < c; v++ {
+						result.Set(u, v, result.At(u, v)+getScalar(terms[i]))
+					}
+				}
+			case r2 == r && c2 == c:
+				// full matrix addition
+				result.Add(result, terms[i])
+			case r2 == 1 && c2 == c:
+				// row vector addition, add current term from every row in result
+				for u := 0; u < r; u++ {
+					var a mat64.Vector
+					a.AddVec(result.RowView(u), terms[i].RowView(0))
+					result.SetRow(u, a.RawVector().Data)
+				}
+			default:
+				return nil, errors.New("Dimension mismatch")
+			}
 		}
 		return result, nil
 	}
 
 	// split by - groups. if more than 1: parse them, check if dimensions match, then add it together
-	terms, _, _, err = splitAndCheck(expr, "-")
+	terms, err = splitAndParse(expr, "-", true)
 	if err != nil {
 		return nil, err
 	}
 	if terms != nil {
-		// initialize result to first the term
-		r, c = terms[0].Dims()
+		// initialize result to first the term, dimensions will stay the same
+		r, c := terms[0].Dims()
 		result = mat64.NewDense(r, c, terms[0].RawMatrix().Data)
 		for i := 1; i < len(terms); i++ {
 			r2, c2 := terms[i].Dims()
@@ -888,13 +881,21 @@ func parseExpression(expr string) (result *mat64.Dense, err error) {
 					a.SubVec(result.RowView(u), terms[i].RowView(0))
 					result.SetRow(u, a.RawVector().Data)
 				}
+			default:
+				return nil, errors.New("Dimension mismatch")
 			}
 		}
 		return result, nil
 	}
 
+	//split by ^ groups
+	//terms, r, c, err := splitAndCheckEqualDim(expr, "^")
+	if err != nil {
+		return nil, err
+	}
+
 	// split by ./ groups. if more than 1: parse them
-	terms, r, c, err = splitAndCheckEqualDim(expr, "./")
+	terms, _, _, err = splitAndCheckEqualDim(expr, "./")
 	if err != nil {
 		return nil, err
 	}
@@ -907,7 +908,7 @@ func parseExpression(expr string) (result *mat64.Dense, err error) {
 	}
 
 	// split by .* groups. if more than 1: parse them
-	terms, r, c, err = splitAndCheckEqualDim(expr, ".*")
+	terms, _, _, err = splitAndCheckEqualDim(expr, ".*")
 	if err != nil {
 		return nil, err
 	}
@@ -920,7 +921,7 @@ func parseExpression(expr string) (result *mat64.Dense, err error) {
 	}
 
 	// split by * groups. if more than 1: parse them
-	terms, err = split(expr, "*")
+	terms, err = splitAndParse(expr, "*", false)
 	if err != nil {
 		return nil, err
 	}
@@ -929,18 +930,38 @@ func parseExpression(expr string) (result *mat64.Dense, err error) {
 		for i := 1; i < len(terms); i++ {
 			r, c := result.Dims()
 			r2, c2 := terms[i].Dims()
-			//scalar multiplication?
-			if r2 == 1 && c2 == 1 {
+			switch {
+			case r2 == 1 && c2 == 1:
 				result.Scale(terms[i].At(0, 0), result)
-			} else if r == 1 && c == 1 {
+			case r == 1 && c == 1:
 				terms[i].Scale(result.At(0, 0), terms[i])
 				result = terms[i]
-			} else if r2 != c {
-				return nil, errors.New("Dimension mismatch")
-			} else {
+			case r2 == c:
 				res2 := mat64.NewDense(r, c2, nil)
 				res2.Mul(result, terms[i])
 				result = res2
+			default:
+				return nil, errors.New("Dimension mismatch")
+			}
+		}
+		return result, nil
+	}
+
+	// split by / groups
+	terms, err = splitAndParse(expr, "/", false)
+	if err != nil {
+		return nil, err
+	}
+	if terms != nil {
+		result = terms[0]
+		for i := 1; i < len(terms); i++ {
+			//r, c := result.Dims()
+			r2, c2 := terms[i].Dims()
+			switch {
+			case r2 == 1 && c2 == 1:
+				result.Scale(1/getScalar(terms[i]), result)
+			default:
+				return nil, errors.New("Dimension mismatch")
 			}
 		}
 		return result, nil
