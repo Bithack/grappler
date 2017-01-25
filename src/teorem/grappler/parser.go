@@ -27,6 +27,23 @@ var returnMatrixesOrder = make([]string, 0)
 
 var limitLow, limitHigh int
 
+var helpTexts = map[string]string{
+	"pca": `pca(X, DIM) - Performs a principal components analysis on matrix X which is represented as an n×d matrix 
+where each row is an observation and each column is a variable. It returns X projected down to DIM dimensions.`,
+	"sum":   `sum(X, DIM) - Sum of elements along dimension DIM.`,
+	"normr": `normr(X) - Normalizes X by dividing every row with the L2 norm`,
+	"sort":  `sort(X, DIM) - Sorts X along dimension DIM`,
+	"var":   `var(X) - Calculates variances of X per column as sum( (x_i - mean(X))^2 ) / (n-1)`,
+}
+
+func parseGetHelp(function string) (m string) {
+	m, ok := helpTexts[function]
+	if !ok {
+		return "No such function"
+	}
+	return
+}
+
 func addReturn(s string, m *mat64.Dense) {
 	returnMatrixes[s] = m
 	returnMatrixesOrder = append(returnMatrixesOrder, s)
@@ -608,6 +625,7 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 }
 
 func splitAndParse(expr string, sep string, acceptEmpty bool) (terms2 []*mat64.Dense, err error) {
+	grLog(fmt.Sprintf("splitAndParse %v, %v", expr, sep))
 	terms := strings.Split(expr, sep)
 	if len(terms) > 1 {
 		terms2 = make([]*mat64.Dense, len(terms))
@@ -659,16 +677,20 @@ func splitAndCheckEqualDim(expr string, sep string) (terms2 []*mat64.Dense, last
 }
 
 func clearParser() {
+	grLog("Clearing memory used by parser")
 	for i := range tempMatrixes {
+		//tempMatrixes[i] = nil
 		delete(tempMatrixes, i)
 	}
 	for i := range returnMatrixes {
+		//returnMatrixes[i] = nil
 		delete(returnMatrixes, i)
 	}
 	returnMatrixesOrder = returnMatrixesOrder[:0]
 }
 
 func parseColonExpression(expr string) (result *mat64.Dense, err error) {
+	grLog(fmt.Sprintf("parseColonExpression %v", expr))
 	parts := strings.Split(expr, ":")
 	if len(parts) == 2 {
 		var a, b float64
@@ -688,14 +710,23 @@ func parseColonExpression(expr string) (result *mat64.Dense, err error) {
 			return
 		}
 	}
+	if len(parts) == 3 {
+		a, e1 := strconv.ParseFloat(parts[0], 64)
+		b, e2 := strconv.ParseFloat(parts[1], 64)
+		c, e3 := strconv.ParseFloat(parts[2], 64)
+		if e1 == nil && e2 == nil && e3 == nil && a <= c && b < (c-a) {
+			result = mat64.NewDense(1, int((c-a)/b)+1, nil)
+			for i := 0; i <= int((c-a)/b); i++ {
+				result.Set(0, i, a+float64(i)*b)
+			}
+			return
+		}
+	}
 	return nil, errors.New("Invalid colon expression")
 }
 
 func parseExpression(expr string) (result *mat64.Dense, err error) {
-
-	if debugMode {
-		fmt.Printf("parseExpression %s\n", expr)
-	}
+	grLog(fmt.Sprintf("parseExpression %s", expr))
 
 	// trim spaces from string
 	expr = strings.Trim(expr, " ")
@@ -730,15 +761,27 @@ func parseExpression(expr string) (result *mat64.Dense, err error) {
 		return
 	}
 
-	// now remove ALL spaces from string
-	//expr = strings.Replace(expr, " ", "", -1)
-
 	// simple numeric value, "3.1415"
 	f, err := strconv.ParseFloat(expr, 64)
 	if err == nil {
 		//convert to 1x1 matrix
 		a := mat64.NewDense(1, 1, []float64{f})
 		return a, nil
+	}
+
+	// a:b or a:b:c where a,b,c are valid numeric values
+	test := strings.Split(expr, ":")
+	if len(test) == 2 || len(test) == 3 {
+		var err error
+		for _, s := range test {
+			_, err = strconv.ParseFloat(s, 64)
+			if err != nil {
+				break
+			}
+		}
+		if err == nil {
+			return parseColonExpression(expr)
+		}
 	}
 
 	if expr == "pi" {
@@ -810,92 +853,62 @@ func parseExpression(expr string) (result *mat64.Dense, err error) {
 
 	// OPERATORS
 
-	// a:b, a:b:c
-	test := strings.Split(expr, ":")
-	if len(test) == 2 || len(test) == 3 {
-		return parseColonExpression(expr)
-	}
-
-	// split by + groups
-	terms, err := splitAndParse(expr, "+", true)
-	if err != nil {
-		return nil, err
-	}
-	if terms != nil {
-		// initialize result to first the term, dimensions will stay the same
-		r, c := terms[0].Dims()
-		result = mat64.NewDense(r, c, terms[0].RawMatrix().Data)
-		for i := 1; i < len(terms); i++ {
-			r2, c2 := terms[i].Dims()
-			switch {
-			case r2 == 1 && c2 == 1:
-				//scalar addition (to every element)
-				for u := 0; u < r; u++ {
-					for v := 0; v < c; v++ {
-						result.Set(u, v, result.At(u, v)+getScalar(terms[i]))
-					}
-				}
-			case r2 == r && c2 == c:
-				// full matrix addition
-				result.Add(result, terms[i])
-			case r2 == 1 && c2 == c:
-				// row vector addition, add current term from every row in result
-				for u := 0; u < r; u++ {
-					var a mat64.Vector
-					a.AddVec(result.RowView(u), terms[i].RowView(0))
-					result.SetRow(u, a.RawVector().Data)
-				}
-			default:
-				return nil, errors.New("Dimension mismatch")
-			}
+	// + and -
+	for _, op := range []string{"+", "-"} {
+		// split by + groups
+		terms, err := splitAndParse(expr, op, true)
+		if err != nil {
+			return nil, err
 		}
-		return result, nil
-	}
-
-	// split by - groups. if more than 1: parse them, check if dimensions match, then add it together
-	terms, err = splitAndParse(expr, "-", true)
-	if err != nil {
-		return nil, err
-	}
-	if terms != nil {
-		// initialize result to first the term, dimensions will stay the same
-		r, c := terms[0].Dims()
-		result = mat64.NewDense(r, c, terms[0].RawMatrix().Data)
-		for i := 1; i < len(terms); i++ {
-			r2, c2 := terms[i].Dims()
-			switch {
-			case r2 == 1 && c2 == 1:
-				//elementwise subtraction
-				for u := 0; u < r; u++ {
-					for v := 0; v < c; v++ {
-						result.Set(u, v, result.At(u, v)-getScalar(terms[i]))
+		if terms != nil {
+			// initialize result to first the term, dimensions will stay the same
+			r, c := terms[0].Dims()
+			result = mat64.NewDense(r, c, terms[0].RawMatrix().Data)
+			for i := 1; i < len(terms); i++ {
+				r2, c2 := terms[i].Dims()
+				switch {
+				case r2 == 1 && c2 == 1:
+					//scalar addition/subtraction
+					for u := 0; u < r; u++ {
+						for v := 0; v < c; v++ {
+							switch op {
+							case "+":
+								result.Set(u, v, result.At(u, v)+getScalar(terms[i]))
+							case "-":
+								result.Set(u, v, result.At(u, v)-getScalar(terms[i]))
+							}
+						}
 					}
+				case r2 == r && c2 == c:
+					// full matrix addition/subtraction
+					switch op {
+					case "+":
+						result.Add(result, terms[i])
+					case "-":
+						result.Sub(result, terms[i])
+					}
+				case r2 == 1 && c2 == c:
+					// row vector addition, add current term from every row in result
+					for u := 0; u < r; u++ {
+						var a mat64.Vector
+						switch op {
+						case "+":
+							a.AddVec(result.RowView(u), terms[i].RowView(0))
+						case "-":
+							a.SubVec(result.RowView(u), terms[i].RowView(0))
+						}
+						result.SetRow(u, a.RawVector().Data)
+					}
+				default:
+					return nil, errors.New("Dimension mismatch")
 				}
-			case r2 == r && c2 == c:
-				// full matrix subtraction
-				result.Sub(result, terms[i])
-			case r2 == 1 && c2 == c:
-				// row vector subtraction, subtract curren term from every row in result
-				for u := 0; u < r; u++ {
-					var a mat64.Vector
-					a.SubVec(result.RowView(u), terms[i].RowView(0))
-					result.SetRow(u, a.RawVector().Data)
-				}
-			default:
-				return nil, errors.New("Dimension mismatch")
 			}
+			return result, nil
 		}
-		return result, nil
-	}
-
-	//split by ^ groups
-	//terms, r, c, err := splitAndCheckEqualDim(expr, "^")
-	if err != nil {
-		return nil, err
 	}
 
 	// split by ./ groups. if more than 1: parse them
-	terms, _, _, err = splitAndCheckEqualDim(expr, "./")
+	terms, _, _, err := splitAndCheckEqualDim(expr, "./")
 	if err != nil {
 		return nil, err
 	}
@@ -955,13 +968,36 @@ func parseExpression(expr string) (result *mat64.Dense, err error) {
 	if terms != nil {
 		result = terms[0]
 		for i := 1; i < len(terms); i++ {
-			//r, c := result.Dims()
 			r2, c2 := terms[i].Dims()
 			switch {
 			case r2 == 1 && c2 == 1:
 				result.Scale(1/getScalar(terms[i]), result)
 			default:
 				return nil, errors.New("Dimension mismatch")
+			}
+		}
+		return result, nil
+	}
+
+	// split by ' ' groups, build a new "row" matrix by concat
+	terms, err = splitAndParse(expr, " ", false)
+	if err != nil {
+		return nil, err
+	}
+	if len(terms) > 1 {
+		grLog(fmt.Sprintf("%v", terms))
+		r, c := terms[0].Dims()
+		result = mat64.NewDense(r, c*len(terms), nil)
+		for i := 0; i < len(terms); i++ {
+			r2, c2 := terms[i].Dims()
+			if r2 != r || c2 != c {
+				return nil, errors.New("Dimension mismatch")
+			}
+			for j := 0; j < c2; j++ {
+				//brute force version, ColView().RawVector doesnt work
+				for y := 0; y < r; y++ {
+					result.Set(y, i*c2+j, terms[i].At(y, j))
+				}
 			}
 		}
 		return result, nil

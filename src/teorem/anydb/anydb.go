@@ -589,11 +589,11 @@ func guessDBType(path string) (string, string) {
 
 	info, err := os.Stat(path)
 	if err == nil && info.IsDir() {
-		_, err = os.Stat(path + "/data.mdb")
+		_, err = os.Stat(filepath.Join(path, "/data.mdb"))
 		if err == nil {
 			return "lmdb", path
 		}
-		files, err := filepath.Glob("*.ldb")
+		files, err := filepath.Glob(filepath.Join(path, "*.ldb"))
 		if err == nil && len(files) > 0 {
 			return "leveldb", path
 		}

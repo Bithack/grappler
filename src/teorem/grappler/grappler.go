@@ -193,6 +193,6 @@ func open(path string) {
 
 func grLog(message string) {
 	if debugMode {
-		fmt.Printf(message)
+		fmt.Printf("%v\n", message)
 	}
 }

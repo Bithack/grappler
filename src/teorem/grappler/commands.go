@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"os"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -227,7 +228,7 @@ switcher:
 			}
 		}
 
-		if selectedDBs[0].Identity() == "lmdb" {
+		if selectedDBs[0].Identity() == "lmdb" || selectedDBs[0].Identity() == "leveldb" {
 			d := &caffe.Datum{}
 			err = proto.Unmarshal(lastValue, d)
 			if err != nil {
@@ -243,6 +244,17 @@ switcher:
 		} else {
 			fmt.Printf("%+v\n", lastValue)
 		}
+
+	case "clear":
+		for m := range matrixes {
+			matrixes[m] = nil
+			delete(matrixes, m)
+		}
+
+	case "memory":
+		var stats runtime.MemStats
+		runtime.ReadMemStats(&stats)
+		fmt.Printf("%+v\n", stats)
 
 	case "size", "info":
 		size := myDB.SizeOf([]byte("00000000"), []byte("99999999"))
@@ -763,6 +775,9 @@ switcher:
 		return false
 
 	case "?", "help":
+		if len(parts) == 2 {
+			fmt.Printf("%v\n", parseGetHelp(parts[1]))
+		}
 		if len(parts) == 1 {
 			fmt.Printf("COMMANDS\n")
 			fmt.Printf("\n")
@@ -796,17 +811,9 @@ switcher:
 			fmt.Printf("    SHOW namespaces | sets | bins | namespace/<namespace>\n")
 			fmt.Printf("\n")
 			fmt.Printf("  MATH\n")
-			fmt.Printf("    rand(i[,j])\n")
-			fmt.Printf("    ones(i[,j])\n")
-			fmt.Printf("    zeros(i[,j])\n")
-			fmt.Printf("    max(A)\n")
-			fmt.Printf("    min(A)\n")
-			fmt.Printf("    mean(A)\n")
-			fmt.Printf("    max(A)\n")
-			fmt.Printf("    size(A)\n")
-			fmt.Printf("    pca(A)\n")
-			fmt.Printf("    bh_tsne(A, dim, theta, perplexity)\n")
-			fmt.Printf("    A', A + B, A - B, A * B, A .* B\n")
+			fmt.Printf("    Functions: rand, ones, zeros, max, min, mean, size, pca, var, bh_tsne, hist, svg, normr, sort\n")
+			fmt.Printf("    For details write \"HELP function\"\n")
+			fmt.Printf("    Operators: A', A + B, A - B, A * B, A .* B, A / B, A ./ B, a:b, a:b:c\n")
 			fmt.Printf("\n")
 		}
 
@@ -983,15 +990,28 @@ switcher:
 	case "who", "whos":
 		if len(matrixes) == 0 && len(matrixesChar) == 0 {
 			fmt.Printf("No variables yet\n")
-			break
+		} else {
+			for m := range matrixes {
+				r, c := matrixes[m].Dims()
+				fmt.Printf("%s"+strings.Repeat(" ", 10-len(m))+"Float64      Dims(%v, %v)\n", m, r, c)
+			}
+			for m := range matrixesChar {
+				r, c := matrixesChar[m].Dims()
+				fmt.Printf("%s"+strings.Repeat(" ", 10-len(m))+"Char         Dims(%v, %v)\n", m, r, c)
+			}
 		}
-		for m := range matrixes {
-			r, c := matrixes[m].Dims()
-			fmt.Printf("%s"+strings.Repeat(" ", 10-len(m))+"Float64      Dims(%v, %v)\n", m, r, c)
-		}
-		for m := range matrixesChar {
-			r, c := matrixesChar[m].Dims()
-			fmt.Printf("%s"+strings.Repeat(" ", 10-len(m))+"Char         Dims(%v, %v)\n", m, r, c)
+		if debugMode {
+			fmt.Printf("tempMatrixes:\n")
+			for m := range tempMatrixes {
+				r, c := tempMatrixes[m].Dims()
+				fmt.Printf("%s"+strings.Repeat(" ", 10-len(m))+"Float64      Dims(%v, %v)\n", m, r, c)
+			}
+			fmt.Printf("returnMatrixes:\n")
+			for m := range returnMatrixes {
+				r, c := returnMatrixes[m].Dims()
+				fmt.Printf("%s"+strings.Repeat(" ", 10-len(m))+"Float64      Dims(%v, %v)\n", m, r, c)
+
+			}
 		}
 
 	default:
@@ -1040,10 +1060,10 @@ switcher:
 				fmt.Printf("%v\n", err)
 			}
 		}
-		//release memory from temporary matrixes
-		clearParser()
 	}
 
+	//release memory from temporary matrixes
+	clearParser()
 	return true
 }
 
