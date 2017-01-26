@@ -412,7 +412,7 @@ func (db *ADB) Next() bool {
 		}
 		if db.fileKeyCol != -1 {
 			db.fileKey = []byte(row[db.fileKeyCol])
-			db.fileValue = []byte(strings.Join(append(row[0:db.fileKeyCol], row[db.fileKeyCol:]...), " "))
+			db.fileValue = []byte(strings.Join(append(row[0:db.fileKeyCol], row[db.fileKeyCol+1:]...), " "))
 		} else {
 			db.fileValue = []byte(strings.Join(row, " "))
 		}
