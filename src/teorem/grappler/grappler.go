@@ -20,37 +20,10 @@ import (
 	"github.com/gonum/matrix/mat64"
 )
 
-func panicOnError(err error) {
-	if err != nil {
-		panic(err)
-	}
-}
-
-func contains(list interface{}, elem interface{}) bool {
-	v := reflect.ValueOf(list)
-	for i := 0; i < v.Len(); i++ {
-		if v.Index(i).Interface() == elem {
-			return true
-		}
-	}
-	return false
-}
-
-type dbInfo struct {
-	/*path   string
-	key    []byte
-	value  []byte
-	floats []float32*/
-	dumpOption string
-}
-
 var allDBs []*anydb.ADB
 var selectedDBs []*anydb.ADB
-var myDB *anydb.ADB // deprecated, should be selectedDBs[0]
-var dbInfos []dbInfo
 
 var limit uint64
-var writeFormat string
 
 var maxPrintWidth = 10
 
@@ -64,23 +37,33 @@ var debugMode = false
 var matrixes = make(map[string]*mat64.Dense)
 var matrixesChar = make(map[string]*matchar.Matchar)
 
-// the number of workers to use for the heavy stuff (like generate dataset)
-// defaults to number of logical cpus
-var workers = runtime.NumCPU()
+type generateConfig struct {
+	Mode            string
+	PercentCropping int
+}
 
 type grapplerConfig struct {
-	Path                []string `json:"path"`
-	Servers             []string `json:"servers"`
-	GenerateMode        []string
-	GenerateMaxCropping []string
+	Path     []string `json:"path"`
+	Servers  []string `json:"servers"`
+	Generate generateConfig
+	Workers  int
 }
 
 var config grapplerConfig
+
+func setDefaultConfig() {
+	config.Generate.Mode = "random"
+	config.Generate.PercentCropping = 80
+	// the number of workers to use for the heavy stuff (like generate dataset)
+	// defaults to number of logical cpus
+	config.Workers = runtime.NumCPU()
+}
+
 var usr *user.User
 
 func main() {
 
-	fmt.Printf("Teorem Data Grappler\nVersion 0.0.10\n")
+	fmt.Printf("Teorem Data Grappler\nVersion 0.0.11\n")
 
 	rand.Seed(time.Now().UTC().UnixNano())
 
@@ -95,6 +78,7 @@ func main() {
 	// load history
 	tinyprompt.LoadHistory(usr.HomeDir + "/.grappler_history")
 
+	setDefaultConfig()
 	// load config
 	configFile := usr.HomeDir + "/.config/grappler/config.json"
 	file, err := ioutil.ReadFile(configFile)
@@ -104,6 +88,7 @@ func main() {
 		ioutil.WriteFile(configFile, []byte("{}"), 0644)
 	} else {
 		json.Unmarshal(file, &config)
+		fmt.Printf("Config read from %v\n", configFile)
 	}
 
 	fmt.Printf("Interactive mode. Type \"help\" for commands.\n")
@@ -119,6 +104,7 @@ func main() {
 	for _, db := range allDBs {
 		db.Close()
 	}
+
 	// save history
 	tinyprompt.SaveHistory("~/.grappler_history", []string{"q", "quit"})
 }
@@ -162,14 +148,13 @@ func open(path string) {
 		toTry = append(toTry, filepath.Join(p, path))
 	}
 
-	var err error
 	for _, p := range toTry {
 
 		if debugMode {
 			fmt.Printf("Trying %v\n", p)
 		}
 
-		myDB, err = anydb.Open(p, dbType)
+		myDB, err := anydb.Open(p, dbType)
 		if err == nil {
 			fmt.Printf("Database opened.")
 			e := myDB.Entries()
@@ -184,9 +169,6 @@ func open(path string) {
 			allDBs = append(allDBs, myDB)
 			selectedDBs = []*anydb.ADB{myDB}
 
-			var d dbInfo
-			dbInfos = append(dbInfos, d)
-
 			return
 		}
 	}
@@ -197,4 +179,14 @@ func grLog(message string) {
 	if debugMode {
 		fmt.Printf("%v\n", message)
 	}
+}
+
+func contains(list interface{}, elem interface{}) bool {
+	v := reflect.ValueOf(list)
+	for i := 0; i < v.Len(); i++ {
+		if v.Index(i).Interface() == elem {
+			return true
+		}
+	}
+	return false
 }

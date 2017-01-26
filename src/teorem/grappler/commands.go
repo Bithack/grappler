@@ -257,7 +257,7 @@ switcher:
 		fmt.Printf("%+v\n", stats)
 
 	case "size", "info":
-		size := myDB.SizeOf([]byte("00000000"), []byte("99999999"))
+		size := selectedDBs[0].SizeOf([]byte("00000000"), []byte("99999999"))
 		mb := size / (1024 * 1024)
 		fmt.Printf("Approximate size whole db: %v Mb\n", mb)
 
@@ -453,7 +453,7 @@ switcher:
 		var wg sync.WaitGroup
 
 		// set up some workers, reading data from the jobs channel and saving them to the result channel
-		for i := 0; i < workers; i++ {
+		for i := 0; i < config.Workers; i++ {
 			wg.Add(1)
 			go func() {
 				for {
@@ -495,8 +495,9 @@ switcher:
 							switch todo[op] {
 							case "cropping", "croppings":
 								//max 80% cropping
-								nw := int(0.8*float64(w) + rand.Float64()*0.2*float64(w))
-								nh := int(0.8*float64(h) + rand.Float64()*0.2*float64(h))
+								pc := float64(config.Generate.PercentCropping) / 100
+								nw := int(pc*float64(w) + rand.Float64()*(1-pc)*float64(w))
+								nh := int(pc*float64(h) + rand.Float64()*(1-pc)*float64(h))
 								x := rand.Intn(w - nw)
 								y := rand.Intn(h - nh)
 								r := image.Rect(x, y, x+nw, y+nh)
@@ -613,20 +614,23 @@ switcher:
 			switch mode {
 			case "random":
 				j.key, j.value, err = selectedDBs[0].GetRandom()
+				j.count = count
+				if err == nil {
+					jobs <- j
+					count++
+				}
 			default:
 				j.key = selectedDBs[0].Key()
 				j.value = selectedDBs[0].Value()
-			}
-			j.count = count
-			if err == nil {
+				j.count = count
 				jobs <- j
 				count++
-				if count >= max {
-					break
-				}
-				if !selectedDBs[0].Next() {
-					break
-				}
+			}
+			if mode == "sequential" && !selectedDBs[0].Next() {
+				break
+			}
+			if count >= max {
+				break
 			}
 		}
 		grLog("Data loader finished")
@@ -668,7 +672,7 @@ switcher:
 		if len(parts) == 2 {
 			switch parts[1] {
 			case "workers":
-				fmt.Printf("%v\n", workers)
+				fmt.Printf("%v\n", config.Workers)
 			case "width":
 				fmt.Printf("%v\n", maxPrintWidth)
 			case "debug":
@@ -680,7 +684,7 @@ switcher:
 		}
 		switch parts[1] {
 		case "workers":
-			workers, _ = strconv.Atoi(parts[2])
+			config.Workers, _ = strconv.Atoi(parts[2])
 		// options for printing matrixes
 		case "width":
 			maxPrintWidth, _ = strconv.Atoi(parts[2])
@@ -726,7 +730,9 @@ switcher:
 			"random(3,3)+(random(3,3)-random(3,3))",
 			"bh_tsne(pca(random(500,200),100),3,0.5,50)",
 			"test' * test",
-			"rand(3,3) .* test .* rand(3,3)"}
+			"rand(3,3) .* test .* rand(3,3)",
+			"test(:,:)",
+			"[1 2; 3 4; 5 6]"}
 		passed := 0
 		for i := range tests {
 			passed = passed + doTest(tests[i])
