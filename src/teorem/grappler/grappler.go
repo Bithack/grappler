@@ -69,8 +69,10 @@ var matrixesChar = make(map[string]*matchar.Matchar)
 var workers = runtime.NumCPU()
 
 type grapplerConfig struct {
-	Path    []string `json:"path"`
-	Servers []string `json:"servers"`
+	Path                []string `json:"path"`
+	Servers             []string `json:"servers"`
+	GenerateMode        []string
+	GenerateMaxCropping []string
 }
 
 var config grapplerConfig

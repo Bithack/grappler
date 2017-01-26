@@ -61,7 +61,7 @@ switcher:
 			break
 		}
 		var namespace, set string
-		if parts[2] == "into" {
+		if len(parts) > 2 && parts[2] == "into" {
 			nss := strings.Split(parts[3], ".")
 			namespace = nss[0]
 			set = nss[1]
@@ -494,8 +494,9 @@ switcher:
 							h := img.Bounds().Dy()
 							switch todo[op] {
 							case "cropping", "croppings":
-								nw := 100 + rand.Intn(w-100)
-								nh := 100 + rand.Intn(h-100)
+								//max 80% cropping
+								nw := int(0.8*float64(w) + rand.Float64()*0.2*float64(w))
+								nh := int(0.8*float64(h) + rand.Float64()*0.2*float64(h))
 								x := rand.Intn(w - nw)
 								y := rand.Intn(h - nh)
 								r := image.Rect(x, y, x+nw, y+nh)
@@ -503,14 +504,13 @@ switcher:
 							case "brightness":
 								dst = imaging.AdjustBrightness(img, float64(rand.Intn(100)-50))
 							case "sharpness":
-								dst = imaging.Sharpen(img, float64(rand.Intn(5)))
+								dst = imaging.Sharpen(img, float64(rand.Intn(6)))
 							case "blur":
-								dst = imaging.Blur(img, float64(rand.Intn(5)))
+								dst = imaging.Blur(img, float64(rand.Intn(6)))
 							default:
 								fmt.Printf("Unknown operation!\n")
 								return
 							}
-							// apply horizontal mirroring with 50% probability ??
 						}
 
 						img = imaging.Resize(img, destW, destH, imaging.Lanczos)
@@ -562,7 +562,7 @@ switcher:
 		// Set up only one goroutine reading from result channel and writing to the DB
 		// It returns when the channel is closed
 		go func() {
-			grLog("DB writer started\n")
+			grLog("DB writer started")
 			wCount := 0
 			for {
 				r, more := <-results
@@ -576,7 +576,7 @@ switcher:
 					}
 				} else {
 					wg.Done()
-					grLog("DB writer finished\n")
+					grLog("DB writer finished")
 					return
 				}
 			}
@@ -586,11 +586,11 @@ switcher:
 		// to close it send a value to the quit channel
 		noMoreRandom := make(chan int)
 		go func() {
-			grLog("Random data loader started\n")
+			grLog("Random data loader started")
 			for {
 				select {
 				case <-noMoreRandom:
-					grLog("Random data loader finished\n")
+					grLog("Random data loader finished")
 					return
 				default:
 					// if there is room, add to the random channel
@@ -605,28 +605,37 @@ switcher:
 			}
 		}()
 
-		grLog("Data loader started\n")
+		mode := "random" //"sequential"
+		grLog("Data loader started")
 		for {
 			var j imageJob
-			j.key = selectedDBs[0].Key()
-			j.value = selectedDBs[0].Value()
-			j.count = count
-			jobs <- j
-			count++
-			if count >= max {
-				break
+			var err error
+			switch mode {
+			case "random":
+				j.key, j.value, err = selectedDBs[0].GetRandom()
+			default:
+				j.key = selectedDBs[0].Key()
+				j.value = selectedDBs[0].Value()
 			}
-			if !selectedDBs[0].Next() {
-				break
+			j.count = count
+			if err == nil {
+				jobs <- j
+				count++
+				if count >= max {
+					break
+				}
+				if !selectedDBs[0].Next() {
+					break
+				}
 			}
 		}
-		grLog("Data loader finished\n")
+		grLog("Data loader finished")
 
 		close(jobs)       // now all the jobs are sent to the channel, so close it
 		wg.Wait()         // wait for all the workers on jobs to finish
 		noMoreRandom <- 1 // close the randomImages producer
 
-		grLog("Finished processing data\n")
+		grLog("Finished processing data")
 
 		// all workers finished, so now we can close the result channel
 		wg.Add(1)
