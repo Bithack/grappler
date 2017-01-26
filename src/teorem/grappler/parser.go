@@ -76,6 +76,7 @@ func checkDims(a *mat64.Dense, r, c int) bool {
 }
 
 func parseMatrixSubindex(mat *mat64.Dense, args string) (result *mat64.Dense, err error) {
+	grLog(fmt.Sprintf("parseMatrixSubIndex %v", args))
 	argv := strings.Split(args, ",")
 	switch len(argv) {
 	case 1:
@@ -769,7 +770,7 @@ func parseExpression(expr string) (result *mat64.Dense, err error) {
 		return a, nil
 	}
 
-	// a:b or a:b:c where a,b,c are valid numeric values
+	// : or a:b or a:b:c where a,b,c are valid numeric values
 	test := strings.Split(expr, ":")
 	if len(test) == 2 || len(test) == 3 {
 		var err error
@@ -779,7 +780,7 @@ func parseExpression(expr string) (result *mat64.Dense, err error) {
 				break
 			}
 		}
-		if err == nil {
+		if err == nil || (len(test) == 2 && test[0] == "" && test[1] == "") {
 			return parseColonExpression(expr)
 		}
 	}
