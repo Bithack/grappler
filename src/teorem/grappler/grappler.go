@@ -15,8 +15,8 @@ import (
 
 	"teorem/anydb"
 	"teorem/multimatrix/matchar"
-	"teorem/tinyprompt"
 
+	"github.com/chzyer/readline"
 	"github.com/gonum/matrix/mat64"
 )
 
@@ -38,7 +38,6 @@ var matrixes = make(map[string]*mat64.Dense)
 var matrixesChar = make(map[string]*matchar.Matchar)
 
 type generateConfig struct {
-	Mode            string
 	PercentCropping int
 }
 
@@ -52,7 +51,6 @@ type grapplerConfig struct {
 var config grapplerConfig
 
 func setDefaultConfig() {
-	config.Generate.Mode = "random"
 	config.Generate.PercentCropping = 80
 	// the number of workers to use for the heavy stuff (like generate dataset)
 	// defaults to number of logical cpus
@@ -63,7 +61,7 @@ var usr *user.User
 
 func main() {
 
-	fmt.Printf("Teorem Data Grappler\nVersion 0.0.11\n")
+	fmt.Printf(grapplerLogo + "\n\nTeorem Data Grappler\nVersion 0.0.11\n")
 
 	rand.Seed(time.Now().UTC().UnixNano())
 
@@ -75,11 +73,8 @@ func main() {
 	}
 	usr, _ = user.Current()
 
-	// load history
-	tinyprompt.LoadHistory(usr.HomeDir + "/.grappler_history")
-
-	setDefaultConfig()
 	// load config
+	setDefaultConfig()
 	configFile := usr.HomeDir + "/.config/grappler/config.json"
 	file, err := ioutil.ReadFile(configFile)
 	if err != nil {
@@ -93,20 +88,34 @@ func main() {
 
 	fmt.Printf("Interactive mode. Type \"help\" for commands.\n")
 
+	l, err := readline.NewEx(&readline.Config{
+		Prompt:                 "\033[31m>\033[0m ",
+		HistoryFile:            usr.HomeDir + "/.grappler_history",
+		AutoComplete:           completer,
+		InterruptPrompt:        "^C",
+		EOFPrompt:              "exit",
+		DisableAutoSaveHistory: true,
+		HistorySearchFold:      true,
+	})
+	if err != nil {
+		fmt.Printf("Readline failed\n")
+		return
+	}
+	defer l.Close()
+
+	var text string
 	for {
-		text := tinyprompt.GetCommand(debugMode)
+		text, _ = l.Readline()
 		if !eval(text) {
 			break
 		}
+		l.SaveHistory(text)
 	}
 
 	//close all open connections
 	for _, db := range allDBs {
 		db.Close()
 	}
-
-	// save history
-	tinyprompt.SaveHistory("~/.grappler_history", []string{"q", "quit"})
 }
 
 // Create new db and return it
@@ -190,3 +199,57 @@ func contains(list interface{}, elem interface{}) bool {
 	}
 	return false
 }
+
+var completer = readline.NewPrefixCompleter(
+	readline.PcItem("close"),
+	readline.PcItem("dbs"),
+	readline.PcItem("use"),
+	readline.PcItem("reset"),
+	readline.PcItem("help", readline.PcItemDynamic(listFunctions)),
+	readline.PcItem("ls"),
+	readline.PcItem("open",
+		readline.PcItemDynamic(listFiles(".")),
+	),
+	readline.PcItem("who"),
+	readline.PcItem("show", readline.PcItem("namespaces"), readline.PcItem("sets"), readline.PcItem("bins")),
+	readline.PcItem("generate", readline.PcItem("siamese", readline.PcItem("dataset"))),
+	readline.PcItem("get"),
+	readline.PcItem("load", readline.PcItem("keys"), readline.PcItem("floats")),
+	readline.PcItem("set", readline.PcItem("limit"), readline.PcItem("filter")),
+	readline.PcItem("write"),
+	readline.PcItem("put"),
+	readline.PcItemDynamic(listVars, readline.PcItem("=", readline.PcItemDynamic(listVars))),
+)
+
+func listFunctions(line string) []string {
+	names := make([]string, 0)
+	for mat := range helpTexts {
+		names = append(names, mat)
+	}
+	return names
+}
+
+func listVars(line string) []string {
+	names := make([]string, 0)
+	for mat := range matrixes {
+		names = append(names, mat)
+	}
+	return names
+}
+
+// Function constructor - constructs new function for listing given directory
+func listFiles(path string) func(string) []string {
+	return func(line string) []string {
+		names := make([]string, 0)
+		files, _ := ioutil.ReadDir(path)
+		for _, f := range files {
+			names = append(names, f.Name())
+		}
+		return names
+	}
+}
+
+var grapplerLogo = ` _______ ______ _______ ______ ______ _____   _______ ______ 
+|     __|   __ \   _   |   __ \   __ \     |_|    ___|   __ \
+|    |  |      <       |    __/    __/       |    ___|      <
+|_______|___|__|___|___|___|  |___|  |_______|_______|___|__|`

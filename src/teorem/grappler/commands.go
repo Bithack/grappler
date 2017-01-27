@@ -11,7 +11,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"teorem/grappler/caffe"
 	"teorem/matlab"
 	"teorem/multimatrix/matchar"
@@ -84,13 +83,11 @@ switcher:
 				if err != nil {
 					fmt.Printf("Aerospike error: %v", err)
 				}
-				if (i+1)%5000 == 0 {
-					fmt.Printf("%v records written\n", i+1)
+				if (i+1)%10 == 0 {
+					fmt.Printf("\r[%v:%v] Writing records...", i+1, r)
 				}
 			}
-			if r%5000 != 0 {
-				fmt.Printf("%v records written\n", r)
-			}
+			fmt.Printf("\r[%v:%v] Writing records... Done\n", r, r)
 		} else {
 			fmt.Printf("Not supported yet\n")
 		}
@@ -364,8 +361,8 @@ switcher:
 			}
 
 			count++
-			if count%5000 == 0 {
-				fmt.Printf("%v records loaded\n", count)
+			if count%10 == 0 {
+				fmt.Printf("\r[%v:%v] Loading records...", count, max)
 			}
 			if count >= max {
 				break load_loop
@@ -374,9 +371,8 @@ switcher:
 				break load_loop
 			}
 		}
-		if count%5000 != 0 {
-			fmt.Printf("%v records loaded\n", count)
-		}
+		fmt.Printf("\r[%v:%v] Loading records... Done\n", count, max)
+
 		if parts[1] == "floats" {
 			printMatrix(mat)
 		} else if parts[1] == "keys" {
@@ -394,13 +390,13 @@ switcher:
 			fmt.Printf("Open and select ONE db first\n")
 			return
 		}
-		//dbname := parts[3]
+
 		selectedDBs[0].Reset()
-		var max, count uint64
+		var max int
 		if limit != 0 {
-			max = limit
+			max = int(limit)
 		} else {
-			max = selectedDBs[0].Entries()
+			max = int(selectedDBs[0].Entries())
 		}
 
 		destSize := strings.Split(strings.Trim(parts[4], ")("), ",")
@@ -439,33 +435,34 @@ switcher:
 		type imageJob struct {
 			key   []byte
 			value []byte
-			count uint64
+			count int
 		}
-		jobs := make(chan imageJob, 100)
 		randomImages := make(chan imageJob, 100)
-
 		type jobResult struct {
 			key   []byte
 			value []byte
 		}
 		results := make(chan jobResult, 100)
 
-		var wg sync.WaitGroup
-
+		noMoreWork := make(chan int)
 		// set up some workers, reading data from the jobs channel and saving them to the result channel
 		for i := 0; i < config.Workers; i++ {
-			wg.Add(1)
+			grLog("Image worker started")
 			go func() {
 				for {
-					j, more := <-jobs
-					if more {
+					select {
+					case <-noMoreWork:
+						grLog("Image worker finished")
+						return
+					default:
+						j := <-randomImages
 
 						// DO THE WORK HERE
 
 						// decode the image, typically a JPEG
 						img, err := imaging.Decode(bytes.NewReader(j.value))
 						if err != nil {
-							break
+							continue
 						}
 
 						// Split 50%/50% probability between producing similar and dissimilar pairs
@@ -551,101 +548,65 @@ switcher:
 							imaging.Encode(writer, dst, imaging.JPEG)
 							writer.Close()
 						}
-
-					} else {
-						wg.Done()
-						return
 					}
 				}
 			}()
 		}
-
-		// Set up only one goroutine reading from result channel and writing to the DB
-		// It returns when the channel is closed
-		go func() {
-			grLog("DB writer started")
-			wCount := 0
-			for {
-				r, more := <-results
-				if more {
-					wCount++
-					fmt.Printf("\r[%v:%v] (random: %v, jobs: %v, results: %v) %s (%v bytes)", wCount, max, len(randomImages), len(jobs), len(results), r.key, len(r.value))
-					err = selectedDBs[1].Put(r.key, r.value)
-					if err != nil {
-						fmt.Printf("\nCouldn't save to db: %v\n", err)
-						break
-					}
-				} else {
-					wg.Done()
-					grLog("DB writer finished")
-					return
-				}
-			}
-		}()
 
 		// set up a goroutine to keep the channel randomImages filled
 		// to close it send a value to the quit channel
 		noMoreRandom := make(chan int)
 		go func() {
 			grLog("Random data loader started")
+			var count int
 			for {
 				select {
 				case <-noMoreRandom:
 					grLog("Random data loader finished")
 					return
 				default:
-					// if there is room, add to the random channel
+					// if there is room, and it looks like we will need them, add to the random channel
 					if len(randomImages) < 100 {
 						var j imageJob
 						j.key, j.value, err = selectedDBs[0].GetRandom()
 						if err == nil {
+							j.count = count
 							randomImages <- j
+							count++
 						}
 					}
 				}
 			}
 		}()
 
-		mode := "random" //"sequential"
-		grLog("Data loader started")
+		var wCount, writeFailures int
+		grLog("DB writer started")
 		for {
-			var j imageJob
-			var err error
-			switch mode {
-			case "random":
-				j.key, j.value, err = selectedDBs[0].GetRandom()
-				j.count = count
-				if err == nil {
-					jobs <- j
-					count++
+			r, more := <-results
+			if more {
+				err = selectedDBs[1].Put(r.key, r.value)
+				if err != nil {
+					fmt.Printf("\nCouldn't save to db: %v\n", err)
+					writeFailures++
+					if writeFailures > 20 {
+						fmt.Printf("\nMore than 20 write errors, shutting down\n")
+						break
+					}
+					continue
 				}
-			default:
-				j.key = selectedDBs[0].Key()
-				j.value = selectedDBs[0].Value()
-				j.count = count
-				jobs <- j
-				count++
-			}
-			if mode == "sequential" && !selectedDBs[0].Next() {
-				break
-			}
-			if count >= max {
-				break
+				wCount++
+				fmt.Printf("\r[%v:%v] (images: %v, results: %v) %s (%v bytes)", wCount, max, len(randomImages), len(results), r.key, len(r.value))
+				if wCount >= max {
+					break
+				}
 			}
 		}
-		grLog("Data loader finished")
+		grLog("DB writer finished")
 
-		close(jobs)       // now all the jobs are sent to the channel, so close it
-		wg.Wait()         // wait for all the workers on jobs to finish
 		noMoreRandom <- 1 // close the randomImages producer
-
-		grLog("Finished processing data")
-
-		// all workers finished, so now we can close the result channel
-		wg.Add(1)
-		close(results)
-		wg.Wait() // wait for DB writer to finish
-
+		for i := 0; i < config.Workers; i++ {
+			noMoreWork <- 1 // tell the workers to go home
+		}
 		stop := time.Since(start)
 		fmt.Printf("\nDone in %.4v\n", stop)
 
