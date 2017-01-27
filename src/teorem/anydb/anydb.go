@@ -479,8 +479,8 @@ func Create(path string, dbType string) (db *ADB, err error) {
 		if err != nil {
 			return nil, err
 		}
-		db.lmdbEnv.SetMaxDBs(10)
-		db.lmdbEnv.SetMapSize(100000000000) // 100 GB...
+		db.lmdbEnv.SetMaxDBs(1)
+		db.lmdbEnv.SetMapSize(1 << 40)
 		err := os.MkdirAll(path, 0700)
 		if err != nil {
 			db.lmdbEnv.Close()
@@ -550,7 +550,7 @@ func Open(path string, dbType string) (db *ADB, err error) {
 			db.lmdbEnv.Close()
 			return nil, err
 		}
-		db.lmdbEnv.SetMaxDBs(10)
+		db.lmdbEnv.SetMaxDBs(1)
 		err = db.lmdbEnv.Update(func(txn *lmdb.Txn) (err error) {
 			db.lmdb, err = txn.OpenRoot(0)
 			return err

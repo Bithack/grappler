@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"math/rand"
 	"os"
+	"os/signal"
 	"os/user"
 	"path/filepath"
 	"reflect"
@@ -64,6 +65,14 @@ func main() {
 	fmt.Printf(grapplerLogo + "\n\nTeorem Data Grappler\nVersion 0.0.11\n")
 
 	rand.Seed(time.Now().UTC().UnixNano())
+
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
+	go func() {
+		for sig := range c {
+			fmt.Printf("\n%v\n", sig)
+		}
+	}()
 
 	if len(os.Args) > 1 {
 		for i := 1; i < len(os.Args); i++ {

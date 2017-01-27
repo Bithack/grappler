@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
-	"math/rand"
 	"os"
 	"regexp"
 	"runtime"
@@ -390,21 +389,11 @@ switcher:
 			fmt.Printf("Open and select ONE db first\n")
 			return
 		}
-
-		selectedDBs[0].Reset()
-		var max int
-		if limit != 0 {
-			max = int(limit)
-		} else {
-			max = int(selectedDBs[0].Entries())
-		}
-
 		destSize := strings.Split(strings.Trim(parts[4], ")("), ",")
 		if len(destSize) != 2 {
 			fmt.Printf("Mistyped image dimensions\n")
 			return
 		}
-
 		destW, err := strconv.Atoi(destSize[0])
 		if err != nil {
 			fmt.Printf("Malformed integer\n")
@@ -415,200 +404,19 @@ switcher:
 			fmt.Printf("Malformed integer\n")
 			return
 		}
-
 		todo := strings.Split(parts[6], ",")
-		fmt.Printf("Will generate LMDB database \"%v\" with siamese image blocks of size %v x %v\n", parts[3], destW, destH)
-		fmt.Printf("Working...\n")
+		generateSiameseDataset(parts[3], destW, destH, todo)
 
-		start := time.Now()
-
-		// creates db
-		newDB, err := create(parts[3], "lmdb")
-		if err != nil {
-			fmt.Printf("Could not create DB: %v\n", err)
-			return
+	case "compute":
+		if len(parts) != 2 {
+			fmt.Printf("usage: compute mean\n")
+			break
 		}
-
-		// append the newDB to selectedDBs, we are now reading from [0] and writing to [1]
-		selectedDBs = append(selectedDBs, newDB)
-
-		type imageJob struct {
-			key   []byte
-			value []byte
-			count int
+		if len(selectedDBs) != 1 {
+			fmt.Printf("select ONE db\n")
+			break
 		}
-		randomImages := make(chan imageJob, 100)
-		type jobResult struct {
-			key   []byte
-			value []byte
-		}
-		results := make(chan jobResult, 100)
-
-		noMoreWork := make(chan int)
-		// set up some workers, reading data from the jobs channel and saving them to the result channel
-		for i := 0; i < config.Workers; i++ {
-			grLog("Image worker started")
-			go func() {
-				for {
-					select {
-					case <-noMoreWork:
-						grLog("Image worker finished")
-						return
-					default:
-						j := <-randomImages
-
-						// DO THE WORK HERE
-
-						// decode the image, typically a JPEG
-						img, err := imaging.Decode(bytes.NewReader(j.value))
-						if err != nil {
-							continue
-						}
-
-						// Split 50%/50% probability between producing similar and dissimilar pairs
-						// label=1 -> similar
-						// label=0 -> dissimilar
-						var dst image.Image
-						var pairLabel = rand.Intn(2)
-						switch pairLabel {
-						case 0:
-							// DISSIMILAR PAIR
-							// read another one from randomImages
-							// the random image could be the same as img! with a large dataset it is probably acceptably
-							for {
-								j := <-randomImages
-								dst, err = imaging.Decode(bytes.NewReader(j.value))
-								if err == nil {
-									break
-								}
-							}
-
-						case 1:
-							// SIMILAR PAIR
-							// select one random operation from the todo
-							op := rand.Intn(len(todo))
-							w := img.Bounds().Dx()
-							h := img.Bounds().Dy()
-							switch todo[op] {
-							case "cropping", "croppings":
-								//max 80% cropping
-								pc := float64(config.Generate.PercentCropping) / 100
-								nw := int(pc*float64(w) + rand.Float64()*(1-pc)*float64(w))
-								nh := int(pc*float64(h) + rand.Float64()*(1-pc)*float64(h))
-								x := rand.Intn(w - nw)
-								y := rand.Intn(h - nh)
-								r := image.Rect(x, y, x+nw, y+nh)
-								dst = imaging.Crop(img, r)
-							case "brightness":
-								dst = imaging.AdjustBrightness(img, float64(rand.Intn(100)-50))
-							case "sharpness":
-								dst = imaging.Sharpen(img, float64(rand.Intn(6)))
-							case "blur":
-								dst = imaging.Blur(img, float64(rand.Intn(6)))
-							default:
-								fmt.Printf("Unknown operation!\n")
-								return
-							}
-						}
-
-						img = imaging.Resize(img, destW, destH, imaging.Lanczos)
-						dst = imaging.Resize(dst, destW, destH, imaging.Lanczos)
-
-						// no need to check type assertion since imaging always returns NRGBA
-						img2, _ := img.(*image.NRGBA)
-						dst2, _ := dst.(*image.NRGBA)
-
-						d := &caffe.Datum{}
-						channels := int32(6)
-						width := int32(destW)
-						height := int32(destH)
-						label := int32(pairLabel)
-						d.Channels = &channels
-						d.Width = &width
-						d.Height = &height
-						d.Label = &label
-						// skip alpha channel (!)
-						d.Data = append(img2.Pix[0:(destW*destH)*3], dst2.Pix[0:(destW*destH)*3]...)
-
-						var r jobResult
-						r.value, _ = proto.Marshal(d)
-						r.key = j.key
-
-						results <- r
-
-						if debugMode {
-							//write images pair to disk
-							n := fmt.Sprintf("image_%v_%v_A.jpg", j.count, pairLabel)
-							writer, _ := os.Create(n)
-							imaging.Encode(writer, img, imaging.JPEG)
-							writer.Close()
-
-							n = fmt.Sprintf("image_%v_%v_B.jpg", j.count, pairLabel)
-							writer, _ = os.Create(n)
-							imaging.Encode(writer, dst, imaging.JPEG)
-							writer.Close()
-						}
-					}
-				}
-			}()
-		}
-
-		// set up a goroutine to keep the channel randomImages filled
-		// to close it send a value to the quit channel
-		noMoreRandom := make(chan int)
-		go func() {
-			grLog("Random data loader started")
-			var count int
-			for {
-				select {
-				case <-noMoreRandom:
-					grLog("Random data loader finished")
-					return
-				default:
-					// if there is room, and it looks like we will need them, add to the random channel
-					if len(randomImages) < 100 {
-						var j imageJob
-						j.key, j.value, err = selectedDBs[0].GetRandom()
-						if err == nil {
-							j.count = count
-							randomImages <- j
-							count++
-						}
-					}
-				}
-			}
-		}()
-
-		var wCount, writeFailures int
-		grLog("DB writer started")
-		for {
-			r, more := <-results
-			if more {
-				err = selectedDBs[1].Put(r.key, r.value)
-				if err != nil {
-					fmt.Printf("\nCouldn't save to db: %v\n", err)
-					writeFailures++
-					if writeFailures > 20 {
-						fmt.Printf("\nMore than 20 write errors, shutting down\n")
-						break
-					}
-					continue
-				}
-				wCount++
-				fmt.Printf("\r[%v:%v] (images: %v, results: %v) %s (%v bytes)", wCount, max, len(randomImages), len(results), r.key, len(r.value))
-				if wCount >= max {
-					break
-				}
-			}
-		}
-		grLog("DB writer finished")
-
-		noMoreRandom <- 1 // close the randomImages producer
-		for i := 0; i < config.Workers; i++ {
-			noMoreWork <- 1 // tell the workers to go home
-		}
-		stop := time.Since(start)
-		fmt.Printf("\nDone in %.4v\n", stop)
+		computeImageMean(selectedDBs[0])
 
 	case "start", "seek":
 		if len(parts) != 2 {
@@ -1058,7 +866,7 @@ func doTest(expr string) int {
 }
 
 func meanInt(data []uint8) (v float64) {
-	for i := range data {
+	for i := 0; i < len(data); i++ {
 		v += float64(data[i])
 	}
 	v = v / float64(len(data))
