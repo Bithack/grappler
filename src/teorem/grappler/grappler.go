@@ -127,6 +127,22 @@ func main() {
 	}
 }
 
+func grCloseDB(db *anydb.ADB) {
+	for i := range allDBs {
+		if db == allDBs[i] {
+			allDBs = append(allDBs[:i], allDBs[i+1:]...)
+			break
+		}
+	}
+	for i := range selectedDBs {
+		if db == selectedDBs[i] {
+			selectedDBs = append(selectedDBs[:i], selectedDBs[i+1:]...)
+			break
+		}
+	}
+	db.Close()
+}
+
 // Create new db and return it
 // Does not update selectedDBs
 func create(path string, dbtype string) (db *anydb.ADB, err error) {
@@ -188,6 +204,8 @@ func open(path string) {
 			selectedDBs = []*anydb.ADB{myDB}
 
 			return
+		} else {
+			grLog(fmt.Sprintf("Open failed: %v", err))
 		}
 	}
 	fmt.Printf("Could not open database %s\n", path)

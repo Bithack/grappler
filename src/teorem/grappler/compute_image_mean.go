@@ -2,12 +2,15 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"sync"
 	"teorem/anydb"
 	"teorem/grappler/caffe"
 	"time"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/gonum/floats"
+	"github.com/gonum/matrix/mat64"
 )
 
 func computeImageMean(db *anydb.ADB) {
@@ -18,12 +21,24 @@ func computeImageMean(db *anydb.ADB) {
 		data []byte
 	}
 	images := make(chan imageJob, 100)
-
 	max := db.Entries()
 
 	db.Scan()
 	db.Reset()
 
+	// read first image to get channel info
+	j := db.Value()
+	d := &caffe.Datum{}
+	err := proto.Unmarshal(j, d)
+	if err != nil {
+		return
+	}
+	channels := int(d.GetChannels())
+	width := int(d.GetWidth())
+	height := int(d.GetHeight())
+	size := width * height
+
+	// LOADER
 	go func() {
 		var c int
 		for {
@@ -38,24 +53,19 @@ func computeImageMean(db *anydb.ADB) {
 				break
 			}
 		}
+		if c%10 != 0 {
+			fmt.Printf("\r[%v:%v] (images: %v) Working...", c, max, len(images))
+		}
 		close(images)
 	}()
 
-	// read one image to scan channel info
-	j := <-images
-	d := &caffe.Datum{}
-	err := proto.Unmarshal(j.data, d)
-	if err != nil {
-		return
+	// every worker writes to her own channels sums and counters
+	matrixSums := make([]*mat64.Dense, config.Workers*channels)
+	for i := range matrixSums {
+		matrixSums[i] = mat64.NewDense(height, width, nil)
 	}
-	channels := int(d.GetChannels())
-	size := int(d.GetWidth() * d.GetHeight())
-	// every worker writes to her own sum
-	meanSums := make([]float64, channels*config.Workers)
-	// put it back again
-	images <- j
 
-	var wCount int
+	wCount := make([]int, config.Workers)
 	var wg sync.WaitGroup
 	for w := 0; w < config.Workers; w++ {
 		wg.Add(1)
@@ -74,10 +84,26 @@ func computeImageMean(db *anydb.ADB) {
 					return
 				}
 				data := d.GetData()
-				for i := 0; i < channels; i++ {
-					meanSums[w*channels+i] += meanInt(data[(size)*i : (size)*(i+1)])
+				floatData := d.GetFloatData()
+				var convData []float64
+				if len(data) == 0 && len(floatData) > 0 {
+					convData = make([]float64, len(floatData))
+					for j := range floatData {
+						convData[j] = float64(floatData[j])
+					}
+				} else {
+					convData = make([]float64, len(data))
+					for j := range data {
+						convData[j] = float64(data[j])
+					}
 				}
-				wCount++
+
+				for i := 0; i < channels; i++ {
+					b := mat64.NewDense(height, width, convData[size*i:size*(i+1)])
+					matrixSums[w*channels+i].Add(matrixSums[w*channels+i], b)
+					//meanSums[w*channels+i] += meanInt(data[(size)*i : (size)*(i+1)])
+				}
+				wCount[w]++
 			}
 		}(w)
 	}
@@ -86,24 +112,34 @@ func computeImageMean(db *anydb.ADB) {
 	stop := time.Since(start)
 	fmt.Printf("\nDone in %v\n", stop)
 
-	// sum it upp
-	finalSums := make([]float64, channels)
+	// sum up the workers matrixes
+	finalSums := make([]*mat64.Dense, channels)
 	for i := range finalSums {
+		finalSums[i] = mat64.NewDense(height, width, nil)
 		for w := 0; w < config.Workers; w++ {
-			finalSums[i] += meanSums[w*channels+i]
+			finalSums[i].Add(finalSums[i], matrixSums[w*channels+i])
 		}
 	}
 
-	// print out mean values
+	wCountTotal := 0
+	for w := range wCount {
+		wCountTotal += wCount[w]
+	}
+
+	// calc and print out mean values
 	fmt.Printf("Image mean values:\n")
+	means := make([]float64, channels)
 	for i := range finalSums {
-		fmt.Printf("Channel %v: %f\n", i, finalSums[i]/float64(wCount))
+		finalSums[i].Scale(1/float64(wCountTotal), finalSums[i])
+		matrixes["channelMean"+strconv.Itoa(i)] = finalSums[i]
+		means[i] = floats.Sum(finalSums[i].RawMatrix().Data) / float64(size)
+		fmt.Printf("Channel %v: %f\n", i, means[i])
 	}
 	// in half
-	if len(finalSums)%2 == 0 {
+	if channels%2 == 0 {
 		fmt.Printf("Mean of means:\n")
-		for i := 0; i < len(finalSums)/2; i++ {
-			fmt.Printf("Channel %v, %v: %f\n", i, i+len(finalSums)/2, (finalSums[i]+finalSums[i+len(finalSums)/2])/(float64(wCount)*2))
+		for i := 0; i < channels/2; i++ {
+			fmt.Printf("Channel %v, %v: %f\n", i, i+channels/2, (means[i]+means[i+channels/2])/2)
 		}
 	}
 

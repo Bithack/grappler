@@ -33,9 +33,6 @@ func generateSiameseDataset(dbName string, destW, destH int, todo []string) {
 		return
 	}
 
-	// append the newDB to selectedDBs, we are now reading from [0] and writing to [1]
-	selectedDBs = append(selectedDBs, newDB)
-
 	type imageJob struct {
 		key   []byte
 		value []byte
@@ -132,15 +129,28 @@ func generateSiameseDataset(dbName string, destW, destH int, todo []string) {
 					d.Width = &width
 					d.Height = &height
 					d.Label = &label
-					// skip alpha channel (!)
-					d.Data = append(img2.Pix[0:(destW*destH)*3], dst2.Pix[0:(destW*destH)*3]...)
+					size := destW * destH
+
+					// skip alpha channel! pixel in img2 and dst2 are stored as R G B A R G B A ...
+					// in d.Data channels are stored as seperate blocks
+					d.Data = make([]byte, size*3*2)
+					for ch := 0; ch < 3; ch++ {
+						for i := 0; i < size; i++ {
+							d.Data[ch*size+i] = img2.Pix[ch+i*4]
+						}
+					}
+					for ch := 0; ch < 3; ch++ {
+						for i := 0; i < size; i++ {
+							d.Data[(3+ch)*size+i] = dst2.Pix[ch+i*4]
+						}
+					}
 
 					var r jobResult
 					r.key = j.key
 					r.value, err = proto.Marshal(d)
 
 					for i := range r.meanValues {
-						r.meanValues[i] = meanInt(d.Data[(destW*destH)*i : (destW*destH)*(i+1)])
+						r.meanValues[i] = meanInt(d.Data[(size)*i : (size)*(i+1)])
 					}
 
 					if err == nil {
@@ -198,7 +208,7 @@ func generateSiameseDataset(dbName string, destW, destH int, todo []string) {
 	for r := range results {
 		// create unique key
 		k := fmt.Sprintf("%010d", wCount)
-		err = selectedDBs[1].Put([]byte(k), r.value)
+		err = newDB.Put([]byte(k), r.value)
 		if err != nil {
 			fmt.Printf("\nCouldn't save to db: %v\n", err)
 			writeFailures++
@@ -219,6 +229,7 @@ func generateSiameseDataset(dbName string, destW, destH int, todo []string) {
 		}
 	}
 	grLog("DB writer finished")
+	grCloseDB(newDB)
 
 	noMoreRandom <- 1 // close the randomImages producer
 	for i := 0; i < config.Workers; i++ {

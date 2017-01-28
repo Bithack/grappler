@@ -151,6 +151,12 @@ switcher:
 	case "config":
 		fmt.Printf("%+v\n", config)
 
+	case "next":
+		for i := range selectedDBs {
+			selectedDBs[i].Next()
+		}
+		eval("get last")
+
 	case "get":
 		if len(parts) < 2 {
 			fmt.Printf("Usage: get key [from <namespace>.<set>] [as <object>]\n")
@@ -234,7 +240,21 @@ switcher:
 			fmt.Printf("Channels: %v, Height: %v, Width: %v\n", d.GetChannels(), d.GetHeight(), d.GetWidth())
 			fmt.Printf("Labels: %v\n", d.GetLabel())
 			d1 := d.GetData()
-			lastFloats = d.GetFloatData()
+			if len(d1) > 0 {
+				floatData := make([]float64, len(d1))
+				for j := range d1 {
+					floatData[j] = float64(d1[j])
+				}
+				matrixes["Data"] = mat64.NewDense(int(d.GetHeight()*d.GetChannels()), int(d.GetWidth()), floatData)
+			}
+			d2 := d.GetFloatData()
+			if len(d2) > 0 {
+				floatData := make([]float64, len(d2))
+				for j := range d2 {
+					floatData[j] = float64(d2[j])
+				}
+				matrixes["FloatData"] = mat64.NewDense(int(d.GetHeight()*d.GetChannels()), int(d.GetWidth()), floatData)
+			}
 			fmt.Printf("Data: %v bytes\nFloatData: %v float32 (%v bytes)\n", len(d1), len(lastFloats), len(lastFloats)*4)
 			fmt.Printf("Unrecognized: %v bytes\n", len(d.XXX_unrecognized))
 		} else {
@@ -775,25 +795,31 @@ switcher:
 		if len(matrixes) == 0 && len(matrixesChar) == 0 {
 			fmt.Printf("No variables yet\n")
 		} else {
+			maxLength := 0
+			for m := range matrixes {
+				if len(m) > maxLength {
+					maxLength = len(m)
+				}
+			}
 			for m := range matrixes {
 				r, c := matrixes[m].Dims()
-				fmt.Printf("%s"+strings.Repeat(" ", 10-len(m))+"Float64      Dims(%v, %v)\n", m, r, c)
+				fmt.Printf("%s"+strings.Repeat(" ", maxLength+1-len(m))+"Float64      Dims(%v, %v)\n", m, r, c)
 			}
 			for m := range matrixesChar {
 				r, c := matrixesChar[m].Dims()
-				fmt.Printf("%s"+strings.Repeat(" ", 10-len(m))+"Char         Dims(%v, %v)\n", m, r, c)
+				fmt.Printf("%s"+strings.Repeat(" ", maxLength+1-len(m))+"Char         Dims(%v, %v)\n", m, r, c)
 			}
 		}
 		if debugMode {
 			fmt.Printf("tempMatrixes:\n")
 			for m := range tempMatrixes {
 				r, c := tempMatrixes[m].Dims()
-				fmt.Printf("%s"+strings.Repeat(" ", 10-len(m))+"Float64      Dims(%v, %v)\n", m, r, c)
+				fmt.Printf("%s"+strings.Repeat(" ", 20-len(m))+"Float64      Dims(%v, %v)\n", m, r, c)
 			}
 			fmt.Printf("returnMatrixes:\n")
 			for m := range returnMatrixes {
 				r, c := returnMatrixes[m].Dims()
-				fmt.Printf("%s"+strings.Repeat(" ", 10-len(m))+"Float64      Dims(%v, %v)\n", m, r, c)
+				fmt.Printf("%s"+strings.Repeat(" ", 20-len(m))+"Float64      Dims(%v, %v)\n", m, r, c)
 
 			}
 		}

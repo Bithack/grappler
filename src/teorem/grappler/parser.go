@@ -59,6 +59,9 @@ func cols(a *mat64.Dense) (c int) {
 	return
 }
 
+func newScalar(v float64) *mat64.Dense {
+	return mat64.NewDense(1, 1, []float64{float64(v)})
+}
 func getScalar(a *mat64.Dense) float64 {
 	return a.At(0, 0)
 }
@@ -162,6 +165,10 @@ func checkArguments(fname string, argv []*mat64.Dense, types []string) (err erro
 	}
 	for i := range argv {
 		switch types[i] {
+		case "dimension", "optional:dimension":
+			if !isScalar(argv[i]) || (getScalar(argv[i]) != 1 && getScalar(argv[i]) != 2) {
+				return errors.New("No such dimension in call to " + fname)
+			}
 		case "positive:integer", "optional:positive:integer":
 			if !isScalar(argv[i]) || getScalar(argv[i]) != round(getScalar(argv[i])) || getScalar(argv[i]) < 1 {
 				return errors.New("Expected positive integer as parameter " + strconv.Itoa(i+1) + " in call to " + fname)
@@ -338,7 +345,7 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 		result = argv2[0]
 
 	case "sum":
-		err := checkArguments("sum(X,dim)", argv2, []string{"matrix", "optional:positive:integer"})
+		err := checkArguments("sum(X,dim)", argv2, []string{"matrix", "optional:dimension"})
 		if err != nil {
 			return nil, err
 		}
@@ -364,7 +371,7 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 		}
 
 	case "flip":
-		err := checkArguments("flip(X,dim)", argv2, []string{"matrix", "optional:positive:integer"})
+		err := checkArguments("flip(X,dim)", argv2, []string{"matrix", "optional:dimension"})
 		if err != nil {
 			return nil, err
 		}
@@ -384,7 +391,7 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 		}
 
 	case "sort":
-		err := checkArguments("sort(X,dim)", argv2, []string{"matrix", "optional:positive:integer"})
+		err := checkArguments("sort(X,dim)", argv2, []string{"matrix", "optional:dimension"})
 		if err != nil {
 			return nil, err
 		}
@@ -511,11 +518,21 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 		matrixes["tsne"] = result
 
 	case "size":
-		if len(argv2) != 1 {
-			return nil, errors.New("expected one arguments to size(X)")
+		err = checkArguments("size(X,dim)", argv2, []string{"matrix", "optional:dimension"})
+		if err != nil {
+			return nil, err
 		}
 		r, c := argv2[0].Dims()
-		result = mat64.NewDense(1, 2, []float64{float64(r), float64(c)})
+		switch {
+		case len(argv2) < 2:
+			result = mat64.NewDense(1, 2, []float64{float64(r), float64(c)})
+		case getScalar(argv2[1]) == 1:
+			result = newScalar(float64(r))
+		case getScalar(argv2[1]) == 2:
+			result = newScalar(float64(c))
+		default:
+			return
+		}
 
 	case "mul":
 		r, _ := argv2[0].Dims()
@@ -836,7 +853,7 @@ func parseExpression(expr string) (result *mat64.Dense, err error) {
 	// find first inner function call "rand(expr,expr,expr)" or matrix subindex "A(2)", "A(1,2)", "A(:,:)"
 	// any parenthesis groups within the arguments should be cleared by now
 
-	re = regexp.MustCompile("([_a-zA-Z]+)\\(([^\\)\\(]*)\\)")
+	re = regexp.MustCompile("([_a-zA-Z0-9]+)\\(([^\\)\\(]*)\\)")
 	re.Longest()
 	loc = re.FindStringSubmatchIndex(expr)
 	if loc != nil {

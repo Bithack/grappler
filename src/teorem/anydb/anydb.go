@@ -225,7 +225,7 @@ func (db *ADB) Release() {
 	}
 }
 
-// Scan setups iterator/cursor if there is none
+// Scan setups iterator/cursor if there is none.
 func (db *ADB) Scan() {
 	switch db.identity {
 	case "file":
@@ -541,11 +541,12 @@ func Open(path string, dbType string) (db *ADB, err error) {
 		db.folderFiles, _ = ioutil.ReadDir(db.path)
 
 	case "lmdb":
+		// by default LMDB are with NoLock, we could however try first without it like caffe does...
 		db.lmdbEnv, err = lmdb.NewEnv()
 		if err != nil {
 			return nil, err
 		}
-		err = db.lmdbEnv.Open(db.path, 0, 0644)
+		err = db.lmdbEnv.Open(db.path, lmdb.NoLock, 0644)
 		if err != nil {
 			db.lmdbEnv.Close()
 			return nil, err
