@@ -44,17 +44,19 @@ func generateSiameseDataset(dbName string, destW, destH int, todo []string) {
 		value      []byte
 		meanValues [6]float64
 	}
+
+	// result channels need room for the final results to drop in when we are closing down
 	results := make(chan jobResult, 100)
 
 	noMoreWork := make(chan int)
 	// set up some workers, reading data from the jobs channel and saving them to the result channel
 	for i := 0; i < config.Workers; i++ {
-		grLog("Image worker started")
-		go func() {
+		grLog(fmt.Sprintf("Image worker %v started", i))
+		go func(w int) {
 			for {
 				select {
 				case <-noMoreWork:
-					grLog("Image worker finished")
+					grLog(fmt.Sprintf("Image worker %v finished", w))
 					return
 				default:
 					j := <-randomImages
@@ -78,9 +80,13 @@ func generateSiameseDataset(dbName string, destW, destH int, todo []string) {
 						// read another one from randomImages
 						// the random image could be the same as img! with a large dataset it is probably acceptably
 						for {
-							j := <-randomImages
-							dst, err = imaging.Decode(bytes.NewReader(j.value))
+							k := <-randomImages
+							dst, err = imaging.Decode(bytes.NewReader(k.value))
 							if err == nil {
+								// if we happenened the get the same image, change the label to similar
+								if bytes.Compare(k.key, j.key) == 0 {
+									pairLabel = 1
+								}
 								break
 							}
 						}
@@ -107,6 +113,8 @@ func generateSiameseDataset(dbName string, destW, destH int, todo []string) {
 							dst = imaging.Sharpen(img, float64(rand.Intn(6)))
 						case "blur":
 							dst = imaging.Blur(img, float64(rand.Intn(6)))
+						case "nothing", "none", "noop":
+							dst = imaging.Clone(img)
 						default:
 							fmt.Printf("Unknown operation!\n")
 							return
@@ -173,7 +181,7 @@ func generateSiameseDataset(dbName string, destW, destH int, todo []string) {
 					}
 				}
 			}
-		}()
+		}(i)
 	}
 
 	// set up a goroutine to keep the channel randomImages filled
@@ -224,17 +232,23 @@ func generateSiameseDataset(dbName string, destW, destH int, todo []string) {
 			meanSums[i] += r.meanValues[i+3] //add second image (channel 3,4,5)
 		}
 		fmt.Printf("\r[%v:%v] (images: %v, results: %v) %s (%v bytes)", wCount, max, len(randomImages), len(results), k, len(r.value))
-		if wCount >= max {
+		if wCount >= max || InterruptRequested {
 			break
 		}
 	}
-	grLog("DB writer finished")
+	grLog("\nDB writer finished")
 	grCloseDB(newDB)
 
 	noMoreRandom <- 1 // close the randomImages producer
 	for i := 0; i < config.Workers; i++ {
+		grLog("Worker go home!")
 		noMoreWork <- 1 // tell the workers to go home
 	}
+	// workers could be locked in writing to a full resultChannel, read some values
+	for i := 0; i < config.Workers; i++ {
+		<-results
+	}
+
 	stop := time.Since(start)
 	fmt.Printf("\nDone in %.4v\n", stop)
 

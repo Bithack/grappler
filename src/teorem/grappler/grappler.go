@@ -35,6 +35,8 @@ var lastFloats []float32
 
 var debugMode = false
 
+var variables = make(map[string]*variable)
+
 var matrixes = make(map[string]*mat64.Dense)
 var matrixesChar = make(map[string]*matchar.Matchar)
 
@@ -59,18 +61,34 @@ func setDefaultConfig() {
 }
 
 var usr *user.User
+var hostName string
+
+// InterruptRequested is set to true when the program receives a system signal
+var InterruptRequested bool
 
 func main() {
 
-	fmt.Printf(grapplerLogo + "\n\nTeorem Data Grappler\nVersion 0.0.11\n")
+	fmt.Printf(grapplerLogo + "\n\nTeorem Data Grappler\nVersion 0.0.12\n")
 
 	rand.Seed(time.Now().UTC().UnixNano())
 
+	// Use this to trap and handle system signals
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
 	go func() {
-		for sig := range c {
-			fmt.Printf("\n%v\n", sig)
+		for {
+			select {
+			case <-c:
+				if InterruptRequested {
+					fmt.Printf("\n- Terminated -\n")
+					// second signal without result -> terminate
+					for _, db := range allDBs {
+						db.Close()
+					}
+					os.Exit(1)
+				}
+				InterruptRequested = true
+			}
 		}
 	}()
 
@@ -81,6 +99,7 @@ func main() {
 		}
 	}
 	usr, _ = user.Current()
+	hostName, _ := os.Hostname()
 
 	// load config
 	setDefaultConfig()
@@ -98,7 +117,7 @@ func main() {
 	fmt.Printf("Interactive mode. Type \"help\" for commands.\n")
 
 	l, err := readline.NewEx(&readline.Config{
-		Prompt:                 "\033[31m>\033[0m ",
+		Prompt:                 "[" + hostName + "] \033[31m>\033[0m ",
 		HistoryFile:            usr.HomeDir + "/.grappler_history",
 		AutoComplete:           completer,
 		InterruptPrompt:        "^C",
@@ -114,6 +133,8 @@ func main() {
 
 	var text string
 	for {
+		InterruptRequested = false
+
 		text, _ = l.Readline()
 		if !eval(text) {
 			break
@@ -184,8 +205,41 @@ func open(path string) {
 
 	for _, p := range toTry {
 
-		if debugMode {
-			fmt.Printf("Trying %v\n", p)
+		grLogs("Trying %v", p)
+
+		//check for non-database files (like caffemodel or prototxt)
+		switch filepath.Ext(p) {
+		case ".caffemodel":
+			data, err := ioutil.ReadFile(p)
+			if err != nil {
+				grLogs("Error reading file: %v", err)
+				return
+			}
+			var net caffeMessage
+			err = net.Unmarshal(data, "NetParameter")
+			if err != nil {
+				grLogs("Error unmarshaling protobuf: %v", err)
+				return
+			}
+			variables["caffemodel"] = newVariableFromMessage(&net)
+			variables["caffemodel"].Print("caffemodel")
+			return
+
+		case ".prototxt":
+			data, err := ioutil.ReadFile(p)
+			if err != nil {
+				grLogs("%v", err)
+				return
+			}
+			var net caffeMessage
+			err = net.UnmarshalText(data, "NetParameter")
+			if err != nil {
+				grLogs("%v", err)
+				return
+			}
+			variables["caffemodel"] = newVariableFromMessage(&net)
+			variables["caffemodel"].Print("caffemodel")
+			return
 		}
 
 		myDB, err := anydb.Open(p, dbType)
@@ -217,6 +271,10 @@ func grLog(message string) {
 	}
 }
 
+func grLogs(s string, a ...interface{}) {
+	grLog(fmt.Sprintf(s, a...))
+}
+
 func contains(list interface{}, elem interface{}) bool {
 	v := reflect.ValueOf(list)
 	for i := 0; i < v.Len(); i++ {
@@ -243,7 +301,7 @@ var completer = readline.NewPrefixCompleter(
 	readline.PcItem("get"),
 	readline.PcItem("load", readline.PcItem("keys"), readline.PcItem("floats")),
 	readline.PcItem("set", readline.PcItem("limit"), readline.PcItem("filter")),
-	readline.PcItem("write"),
+	readline.PcItem("write", readline.PcItemDynamic(listVars)),
 	readline.PcItem("put"),
 	readline.PcItemDynamic(listVars, readline.PcItem("=", readline.PcItemDynamic(listVars))),
 )
@@ -258,6 +316,12 @@ func listFunctions(line string) []string {
 
 func listVars(line string) []string {
 	names := make([]string, 0)
+	for n, v := range variables {
+		names = append(names, n)
+		for _, s := range v.GetFields() {
+			names = append(names, n+"."+s)
+		}
+	}
 	for mat := range matrixes {
 		names = append(names, mat)
 	}

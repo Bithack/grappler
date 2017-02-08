@@ -49,7 +49,7 @@ type ADB struct {
 	lmdbKey   []byte
 	lmdbValue []byte
 
-	folderFiles         []os.FileInfo
+	folderFiles         []string
 	folderIterator      int
 	folderValue         []byte
 	folderValueIterator int
@@ -133,8 +133,8 @@ func (db *ADB) GetRandom() (key []byte, value []byte, err error) {
 	switch db.identity {
 	case "folder":
 		i := rand.Int63n(int64(len(db.folderFiles)) - 1)
-		key = []byte(db.folderFiles[i].Name())
-		value, err = ioutil.ReadFile(filepath.Join(db.path, db.folderFiles[i].Name()))
+		key = []byte(db.folderFiles[i])
+		value, err = ioutil.ReadFile(filepath.Join(db.path, db.folderFiles[i]))
 	default:
 		return nil, nil, errors.New("not implemented for this db")
 	}
@@ -152,8 +152,8 @@ func (db *ADB) Get(k []byte) (key []byte, value []byte, err error) {
 
 	case "folder":
 		for i := range db.folderFiles {
-			if bytes.Compare(k, []byte(db.folderFiles[i].Name())) == 0 {
-				value, err = ioutil.ReadFile(filepath.Join(db.path, db.folderFiles[i].Name()))
+			if bytes.Compare(k, []byte(db.folderFiles[i])) == 0 {
+				value, err = ioutil.ReadFile(filepath.Join(db.path, db.folderFiles[i]))
 			}
 		}
 
@@ -288,7 +288,7 @@ func (db *ADB) Key() (key []byte) {
 	case "lmdb":
 		key = db.lmdbKey
 	case "folder":
-		key = []byte(db.folderFiles[db.folderIterator].Name())
+		key = []byte(db.folderFiles[db.folderIterator])
 	}
 
 	//apply key filter
@@ -372,7 +372,7 @@ func (db *ADB) Value() (value []byte) {
 	switch db.identity {
 	case "folder":
 		if db.folderValue == nil {
-			db.folderValue, _ = ioutil.ReadFile(filepath.Join(db.path, db.folderFiles[db.folderIterator].Name()))
+			db.folderValue, _ = ioutil.ReadFile(filepath.Join(db.path, db.folderFiles[db.folderIterator]))
 			db.folderValueIterator = 0
 		}
 		value = db.folderValue
@@ -538,7 +538,17 @@ func Open(path string, dbType string) (db *ADB, err error) {
 		}
 
 	case "folder":
-		db.folderFiles, _ = ioutil.ReadDir(db.path)
+		// this can take a LONG time when opening large directories
+		fmt.Printf("Scanning folder...")
+		f, err := os.Open(db.path)
+		if err != nil {
+			return nil, err
+		}
+		db.folderFiles, err = f.Readdirnames(-1)
+		if err != nil {
+			return nil, err
+		}
+		fmt.Printf("Done\n")
 
 	case "lmdb":
 		// by default LMDB are with NoLock, we could however try first without it like caffe does...
@@ -589,20 +599,20 @@ func guessDBType(path string) (string, string) {
 	path, _ = filepath.Abs(path)
 
 	info, err := os.Stat(path)
-	if err == nil && info.IsDir() {
-		_, err = os.Stat(filepath.Join(path, "/data.mdb"))
-		if err == nil {
-			return "lmdb", path
+	if err == nil {
+		if info.IsDir() {
+			_, err = os.Stat(filepath.Join(path, "/data.mdb"))
+			if err == nil {
+				return "lmdb", path
+			}
+			_, err = os.Stat(filepath.Join(path, "/CURRENT"))
+			if err == nil {
+				return "leveldb", path
+			}
+			return "folder", path
 		}
-		files, err := filepath.Glob(filepath.Join(path, "*.ldb"))
-		if err == nil && len(files) > 0 {
-			return "leveldb", path
-		}
-		return "folder", path
-	} else {
 		return "file", path
 	}
-
 	return "unknown", path
 }
 

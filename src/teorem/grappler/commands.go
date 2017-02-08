@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -22,6 +24,8 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/gonum/matrix/mat64"
 )
+
+var monitorStarted bool
 
 func eval(text string) (status bool) {
 
@@ -438,6 +442,74 @@ switcher:
 		}
 		computeImageMean(selectedDBs[0])
 
+	case "caffe":
+		if len(parts) < 2 {
+			fmt.Printf("usage: caffe monitor | create siamese model\n")
+			break
+		}
+		switch parts[1] {
+
+		case "create":
+			model, ok := variables["caffemodel"]
+			if !ok || model.Type() != "Message.NetParameter" {
+				fmt.Printf("Open a caffemodel first\n")
+				return
+			}
+			newModel := model.Message.Clone()
+
+			// add parameter sharing and clone layers
+			layers := newModel.NetParameter.GetLayer()
+			for _, layer := range layers {
+				switch *layer.Type {
+				case "Input", "Data", "ImageData", "MemoryData", "HDF5Data":
+					continue // don't clone input layers
+
+				case "Convolution", "InnerProduct":
+					// set parameter sharing (weights & bias) for convolutional and innerproduct
+					// overwrites any existing parameter names
+					ps := []*caffe.ParamSpec{new(caffe.ParamSpec), new(caffe.ParamSpec)}
+					ps[0].Name = newString(*layer.Name + "_w")
+					ps[1].Name = newString(*layer.Name + "_b")
+					layer.Param = ps
+				}
+				newLayer := proto.Clone(layer).(*caffe.LayerParameter)
+				*newLayer.Name = *newLayer.Name + "_R"
+				newModel.NetParameter.Layer = append(newModel.NetParameter.Layer, newLayer)
+			}
+			// add loss layer
+			var lossLayer caffe.LayerParameter
+			lossLayer.Type = newString("ContrastiveLoss")
+			lossLayer.Name = newString("loss")
+			last := layers[len(layers)-1].Top[0]
+			lossLayer.Bottom = []string{last, last + "_R", "label"}
+			lossLayer.Top = []string{"loss"}
+			lossLayer.ContrastiveLossParam = new(caffe.ContrastiveLossParameter)
+			lossLayer.ContrastiveLossParam.Margin = newFloat32(1)
+			newModel.NetParameter.Layer = append(newModel.NetParameter.Layer, &lossLayer)
+
+			// we do not
+
+			variables["newCaffemodel"] = newVariableFromMessage(newModel)
+			variables["newCaffemodel"].Print("newCaffemodel")
+
+		case "monitor":
+			if monitorStarted {
+				fmt.Printf("Monitor already started\n")
+				return
+			}
+			info, err := os.Stat("/tmp/caffe.INFO")
+			if err != nil || info.IsDir() {
+				fmt.Printf("No running caffe jobs found\n")
+				return
+			}
+			monitorStarted = true
+			fmt.Printf("Found running caffe job. Launching monitor at http://localhost:5000\n")
+			http.HandleFunc("/", caffeMonitor)
+			http.HandleFunc("/graph", caffeGraph)
+			go http.ListenAndServe(":5000", nil)
+
+		}
+
 	case "start", "seek":
 		if len(parts) != 2 {
 			fmt.Printf("usage: start <string>\n")
@@ -608,7 +680,7 @@ switcher:
 			fmt.Printf("    PUT <keys>,<values> [into <namespace>.<set>]\n")
 			fmt.Printf("\n")
 			fmt.Printf("  IMAGE OPERATIONS\n")
-			fmt.Printf("    GENERATE SIAMESE DATASET <db> with cropping[,brightness][,sharpness][,blur]\n")
+			fmt.Printf("    GENERATE SIAMESE DATASET <db> with none | cropping[,brightness][,sharpness][,blur]\n")
 			fmt.Printf("\n")
 			fmt.Printf("  INFO\n")
 			fmt.Printf("    WHO\n")
@@ -633,8 +705,18 @@ switcher:
 			fmt.Printf("couldn't create file %s\n", parts[3])
 			break
 		}
-		//check vars and that the row dimensions match
+
+		parts := strings.Split(strings.Trim(text, " "), " ")
 		vars := strings.Split(parts[1], ",")
+		v, ok := variables[vars[0]]
+
+		// check if first variable is a Message (only one seems useful right now)
+		if ok && len(vars) == 1 && v.IsMessage() {
+			f.WriteString(v.Message.MarshalText())
+			return
+		}
+
+		// check vars and that the row dimensions match
 		var lastr = 0
 		for _, v := range vars {
 			var matFloat *mat64.Dense
@@ -717,7 +799,18 @@ switcher:
 			}
 			fmt.Printf("[%v] %s: %s\n", i, allDBs[i].Identity(), allDBs[i].Path())
 		}
+		if debugMode {
+			for i := range selectedDBs {
+				fmt.Printf("%+v\n", selectedDBs[i])
+			}
+		}
 		break
+
+	case "pwd":
+		dir, err := filepath.Abs(filepath.Dir(os.Args[0]))
+		if err == nil {
+			fmt.Printf("%v\n", dir)
+		}
 
 	case "close":
 		for _, db := range selectedDBs {
@@ -792,14 +885,22 @@ switcher:
 	case "":
 
 	case "who", "whos":
-		if len(matrixes) == 0 && len(matrixesChar) == 0 {
+		if len(variables) == 0 && len(matrixes) == 0 && len(matrixesChar) == 0 {
 			fmt.Printf("No variables yet\n")
 		} else {
 			maxLength := 0
+			for m := range variables {
+				if len(m) > maxLength {
+					maxLength = len(m)
+				}
+			}
 			for m := range matrixes {
 				if len(m) > maxLength {
 					maxLength = len(m)
 				}
+			}
+			for n, v := range variables {
+				fmt.Printf("%s"+strings.Repeat(" ", maxLength+1-len(n))+v.Type()+"\n", n)
 			}
 			for m := range matrixes {
 				r, c := matrixes[m].Dims()
@@ -838,6 +939,7 @@ switcher:
 					fmt.Printf("%v\n", err)
 					break
 				}
+				variables[t[0]] = newVariableFromFloat(r)
 				matrixes[t[0]] = r
 				printMatrix(t[0])
 				break
@@ -845,6 +947,25 @@ switcher:
 				fmt.Printf("Only letters and digits allowed in variable names\n")
 				break
 			}
+		}
+
+		// check for subfield syntax
+		t2 := strings.Split(text, ".")
+		_, ok := variables[t2[0]]
+		if ok {
+			if len(t2) == 1 {
+				variables[t2[0]].Print(text)
+			} else {
+				//subfield requested
+				f := variables[t2[0]].GetField(t2[1])
+				if f == nil {
+					fmt.Printf("No such field\n")
+					break
+				}
+				variables["ans"] = f
+				f.Print(text)
+			}
+			break
 		}
 
 		//parseExpression only works with float64 matrixes
@@ -889,6 +1010,18 @@ func doTest(expr string) int {
 	clearParser()
 	return 1
 
+}
+
+func newFloat32(f float32) (ref *float32) {
+	ref = new(float32)
+	*ref = f
+	return
+}
+
+func newString(s string) (ref *string) {
+	ref = new(string)
+	*ref = s
+	return
 }
 
 func meanInt(data []uint8) (v float64) {

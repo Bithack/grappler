@@ -15,6 +15,8 @@ import (
 
 func computeImageMean(db *anydb.ADB) {
 
+	grLog(fmt.Sprintf("computeImagemean %v:%v", db.Identity(), db.Path()))
+
 	start := time.Now()
 
 	type imageJob struct {
@@ -31,6 +33,7 @@ func computeImageMean(db *anydb.ADB) {
 	d := &caffe.Datum{}
 	err := proto.Unmarshal(j, d)
 	if err != nil {
+		fmt.Printf("Did not find a valid caffe.Datum in database\n")
 		return
 	}
 	channels := int(d.GetChannels())
@@ -40,6 +43,7 @@ func computeImageMean(db *anydb.ADB) {
 
 	// LOADER
 	go func() {
+		grLog("Image loader started")
 		var c int
 		for {
 			var j imageJob
@@ -49,7 +53,7 @@ func computeImageMean(db *anydb.ADB) {
 			if c%10 == 0 {
 				fmt.Printf("\r[%v:%v] (images: %v) Working...", c, max, len(images))
 			}
-			if !db.Next() {
+			if !db.Next() || InterruptRequested {
 				break
 			}
 		}
@@ -73,7 +77,7 @@ func computeImageMean(db *anydb.ADB) {
 		go func(w int) {
 			for {
 				j, more := <-images
-				if !more {
+				if (!more) || InterruptRequested {
 					wg.Done()
 					return
 				}
@@ -139,7 +143,7 @@ func computeImageMean(db *anydb.ADB) {
 	if channels%2 == 0 {
 		fmt.Printf("Mean of means:\n")
 		for i := 0; i < channels/2; i++ {
-			fmt.Printf("Channel %v, %v: %f\n", i, i+channels/2, (means[i]+means[i+channels/2])/2)
+			fmt.Printf("mean_value: %f\n", (means[i]+means[i+channels/2])/2)
 		}
 	}
 

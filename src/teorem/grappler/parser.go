@@ -209,6 +209,13 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 
 	switch f {
 
+	case "pdist":
+		err := checkArguments("pdist(X)", argv2, []string{"matrix"})
+		if err != nil {
+			return nil, err
+		}
+		result = pdist(argv2[0])
+
 	// a bunch of simple single valued functions
 	case "exp", "sin", "sinh", "asin", "asinh", "cos", "cosh", "acos", "acosh", "tan", "tanh", "atan", "atanh", "abs", "log", "sqrt", "round", "floor", "ceil":
 		if len(argv2) != 1 {
