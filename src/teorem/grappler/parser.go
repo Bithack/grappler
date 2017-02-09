@@ -153,6 +153,45 @@ func parseMatrixSubindex(mat *mat64.Dense, args string) (result *mat64.Dense, er
 	return
 }
 
+func checkArguments2(fname string, argv []*variable, types []string) (err error) {
+	var required int
+	for j := range types {
+		if !strings.HasPrefix(types[j], "optional") {
+			required++
+		}
+	}
+	if len(argv) < required || len(argv) > len(types) {
+		return errors.New("Incorrect number of arguments to " + fname)
+	}
+	for i := range argv {
+		switch types[i] {
+		case "dimension", "optional:dimension":
+			if !argv[i].IsScalar() || (argv[i].GetScalar() != 1 && argv[i].GetScalar() != 2) {
+				return errors.New("No such dimension in call to " + fname)
+			}
+		case "scalar", "optional:scalar":
+			if !argv[i].IsScalar() {
+				return errors.New("Expected scalar as parameter " + strconv.Itoa(i+1) + " in call to " + fname)
+			}
+		case "matrix", "optional:matrix":
+			if !argv[i].IsFloat() {
+				return errors.New("Expected matrix as parameter " + strconv.Itoa(i+1) + " in call to " + fname)
+			}
+		case "message.blob":
+			if argv[i].Type() != "Message.BlobProto" {
+				return errors.New("Expected Message.BlobProto as parameter " + strconv.Itoa(i+1) + " in call to " + fname + ", got " + argv[i].Type())
+			}
+		case "message", "optional:message":
+			if !argv[i].IsMessage() {
+				return errors.New("Expected message as parameter " + strconv.Itoa(i+1) + " in call to " + fname)
+			}
+		default:
+			return errors.New("Unknown variable type specified in function")
+		}
+	}
+	return
+}
+
 func checkArguments(fname string, argv []*mat64.Dense, types []string) (err error) {
 	var required int
 	for j := range types {
@@ -199,15 +238,46 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 	}
 
 	argv := strings.Split(args, ",")
-	argv2 := make([]*mat64.Dense, len(argv))
+
+	// functions workings with other arguments than mat64.Dense can use argv3
+	argv3 := make([]*variable, len(argv))
 	for i := range argv {
-		argv2[i], err = parseExpression(argv[i])
+		argv3[i], err = parseExpression2(argv[i])
 		if err != nil {
 			return nil, errors.New("Invalid argument to " + f + "(): " + err.Error())
 		}
 	}
 
+	// still need to fill in argv2 ...
+	argv2 := make([]*mat64.Dense, len(argv))
+	for i := range argv {
+		if argv3[i].IsFloat() {
+			argv2[i] = argv3[i].FloatMatrix
+		} else {
+			argv2[i] = mat64.NewDense(1, 1, []float64{0})
+		}
+	}
+
 	switch f {
+
+	case "visualize":
+		err := checkArguments2("visualize(blob)", argv3, []string{"message.blob"})
+		if err != nil {
+			return nil, err
+		}
+		caffeVisualize(argv3[0].Message)
+		result = mat64.NewDense(1, 1, []float64{0})
+
+	case "siamese":
+		err := checkArguments2("siamese(M)", argv3, []string{"message"})
+		if err != nil {
+			return nil, err
+		}
+		//quick fix until we rewrite parseFunctionCall to return a *variable
+		newModel := caffeCreateSiameseModel(argv3[0].Message)
+		variables["newCaffemodel"] = newVariableFromMessage(newModel)
+		variables["newCaffemodel"].Print("newCaffemodel")
+		result = mat64.NewDense(1, 1, []float64{0})
 
 	case "pdist":
 		err := checkArguments("pdist(X)", argv2, []string{"matrix"})
@@ -750,6 +820,20 @@ func parseColonExpression(expr string) (result *mat64.Dense, err error) {
 	return nil, errors.New("Invalid colon expression")
 }
 
+// parseExpression2 returns a variable wrapper instead of a mat64.Dense
+func parseExpression2(expr string) (result *variable, err error) {
+	grLog(fmt.Sprintf("parseExpression2 %s", expr))
+	v, ok := variables[expr]
+	if ok {
+		return v.Clone(), nil
+	}
+	m, err := parseExpression(expr)
+	if err != nil {
+		return nil, errors.New("Unknown expression")
+	}
+	return newVariableFromFloat(m), nil
+}
+
 func parseExpression(expr string) (result *mat64.Dense, err error) {
 	grLog(fmt.Sprintf("parseExpression %s", expr))
 
@@ -820,6 +904,10 @@ func parseExpression(expr string) (result *mat64.Dense, err error) {
 		if ok {
 			return mat64.DenseCopyOf(v.T()), nil
 		}
+		vv, ok := variables[expr[0:len(expr)-1]]
+		if ok && vv.IsFloat() {
+			return mat64.DenseCopyOf(vv.FloatMatrix.T()), nil
+		}
 		v, ok = matrixes[expr[0:len(expr)-1]]
 		if ok {
 			return mat64.DenseCopyOf(v.T()), nil
@@ -828,6 +916,11 @@ func parseExpression(expr string) (result *mat64.Dense, err error) {
 		v, ok := tempMatrixes[expr]
 		if ok {
 			return v, nil
+		}
+		vv, ok := variables[expr]
+		grLogs("%v, %v", vv, ok)
+		if ok && vv.IsFloat() {
+			return mat64.DenseCopyOf(vv.FloatMatrix), nil
 		}
 		v, ok = matrixes[expr]
 		if ok {

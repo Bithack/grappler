@@ -50,6 +50,32 @@ func (v *variable) IsFloat() (r bool) {
 	return
 }
 
+func (v *variable) CheckDims(r, c int) (ret bool) {
+	switch v.T {
+	case "FloatMatrix":
+		r2, c2 := v.FloatMatrix.Dims()
+		if (r2 == r) || (c2 == c) {
+			ret = true
+		}
+	}
+	return
+}
+
+func (v *variable) GetScalar() (s float64) {
+	switch {
+	case v.IsScalar():
+		s = v.FloatMatrix.At(0, 0)
+	}
+	return
+}
+func (v *variable) IsScalar() (r bool) {
+	switch {
+	case v.T == "FloatMatrix" && v.CheckDims(1, 1):
+		r = true
+	}
+	return
+}
+
 func (v *variable) IsMessage() (r bool) {
 	if v.T == "Message" {
 		r = true

@@ -26,6 +26,7 @@ type caffeMessage struct {
 	Datum          *caffe.Datum
 	NetParameter   *caffe.NetParameter
 	LayerParameter *caffe.LayerParameter
+	BlobProto      *caffe.BlobProto
 }
 
 func (m *caffeMessage) Unmarshal(data []byte, t string) (err error) {
@@ -82,6 +83,10 @@ func (m *caffeMessage) Clone() (f *caffeMessage) {
 		bts, _ := proto.Marshal(m.Datum)
 		f.Datum = new(caffe.Datum)
 		proto.Unmarshal(bts, f.Datum)
+	case "BlobProto":
+		bts, _ := proto.Marshal(m.BlobProto)
+		f.BlobProto = new(caffe.BlobProto)
+		proto.Unmarshal(bts, f.BlobProto)
 	}
 	return
 }
@@ -89,7 +94,7 @@ func (m *caffeMessage) Clone() (f *caffeMessage) {
 func (m *caffeMessage) GetField(s string) (f *variable) {
 	switch m.T {
 	case "LayerParameter":
-		re := regexp.MustCompile("^parameter\\[(\\d)\\]$")
+		re := regexp.MustCompile("^parameter\\((\\d)\\)$")
 		loc := re.FindStringSubmatch(s)
 		if loc == nil {
 			return
@@ -104,25 +109,13 @@ func (m *caffeMessage) GetField(s string) (f *variable) {
 			}
 			mat := mat64.NewDense(int(dims[0]), 1, f64)
 			f = newVariableFromFloat(mat)
-		}
-		if len(dims) == 4 {
-			for f := 0; f < int(dims[0]); f++ {
-				fmt.Printf("Filter %v:\n", f)
-				di := 0
-				for d := 0; d < int(dims[1]); d++ {
-					for r := 0; r < int(dims[2]); r++ {
-						for c := 0; c < int(dims[3]); c++ {
-							fl := m.LayerParameter.Blobs[i].Data[di]
-							str := strconv.FormatFloat(float64(fl), 'f', 4, 64)
-							fmt.Printf(str + strings.Repeat(" ", 10-len(str)))
-							di++
-						}
-						fmt.Printf("\n")
-					}
-					fmt.Printf("\n")
-				}
-				fmt.Printf("\n")
-			}
+		} else {
+			cm := new(caffeMessage)
+			cm.T = "BlobProto"
+			bts, _ := proto.Marshal(m.LayerParameter.Blobs[i])
+			cm.BlobProto = new(caffe.BlobProto)
+			proto.Unmarshal(bts, cm.BlobProto)
+			f = newVariableFromMessage(cm)
 		}
 
 	case "NetParameter":
@@ -148,14 +141,54 @@ func (m *caffeMessage) GetFields() (s []string) {
 	switch m.T {
 	case "NetParameter":
 		for _, layer := range m.NetParameter.GetLayer() {
-			s = append(s, layer.GetName())
+			s = append(s, *layer.Name)
+			for i := 0; i < len(layer.Param); i++ {
+				s = append(s, fmt.Sprintf("%v.parameter(%v)", *layer.Name, i))
+			}
 		}
 	}
 	return
 }
 
+// The conventional blob dimensions for batches of image data are number N x channel K x height H x width W.
+// Blob memory is row-major in layout, so the last / rightmost dimension changes fastest.
+// For example, in a 4D blob, the value at index (n, k, h, w) is physically located at index ((n * K + k) * H + h) * W + w.
+
 func (m *caffeMessage) Print() {
+	grLogs("caffeMessage.Print(%v)", m.T)
 	switch m.T {
+	case "BlobProto":
+		shape := m.BlobProto.Shape
+		dims := shape.GetDim()
+		if len(dims) == 1 {
+			f64 := make([]float64, len(m.BlobProto.Data))
+			for j := range f64 {
+				f64[j] = float64(m.BlobProto.Data[j])
+			}
+			mat := mat64.NewDense(int(dims[0]), 1, f64)
+			f := newVariableFromFloat(mat)
+			f.Print("ans")
+		}
+		if len(dims) == 4 {
+			di := 0
+			for f := 0; f < int(dims[0]); f++ {
+				fmt.Printf("Filter %v:\n", f)
+				for d := 0; d < int(dims[1]); d++ {
+					for r := 0; r < int(dims[2]); r++ {
+						for c := 0; c < int(dims[3]); c++ {
+							fl := m.BlobProto.Data[di]
+							str := strconv.FormatFloat(float64(fl), 'f', 4, 64)
+							fmt.Printf(str + strings.Repeat(" ", 10-len(str)))
+							di++
+						}
+						fmt.Printf("\n")
+					}
+					fmt.Printf("\n")
+				}
+				fmt.Printf("\n")
+			}
+		}
+
 	case "Datum":
 		fmt.Printf("%+v", *m.Datum)
 
