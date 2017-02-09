@@ -91,10 +91,7 @@ func (v *variable) GetField(f string) (v2 *variable) {
 	grLogs("GetField %v.%v", v.T, f)
 	switch v.T {
 	case "Message":
-		a := v.Message.GetField(f)
-		if a != nil {
-			v2 = newVariableFromMessage(a)
-		}
+		v2 = v.Message.GetField(f)
 	}
 	return
 }

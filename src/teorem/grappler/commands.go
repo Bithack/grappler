@@ -474,6 +474,13 @@ switcher:
 				}
 				newLayer := proto.Clone(layer).(*caffe.LayerParameter)
 				*newLayer.Name = *newLayer.Name + "_R"
+				// add _R to tops & bottoms
+				for i := range newLayer.Top {
+					newLayer.Top[i] = newLayer.Top[i] + "_R"
+				}
+				for i := range newLayer.Bottom {
+					newLayer.Bottom[i] = newLayer.Bottom[i] + "_R"
+				}
 				newModel.NetParameter.Layer = append(newModel.NetParameter.Layer, newLayer)
 			}
 			// add loss layer
@@ -956,14 +963,19 @@ switcher:
 			if len(t2) == 1 {
 				variables[t2[0]].Print(text)
 			} else {
-				//subfield requested
-				f := variables[t2[0]].GetField(t2[1])
-				if f == nil {
-					fmt.Printf("No such field\n")
-					break
+				//subfield(s) requested
+				f := variables[t2[0]]
+				for i := 1; i < len(t2); i++ {
+					f = f.GetField(t2[i])
+					if f == nil {
+						fmt.Printf("No such value %v\n", t2[i])
+						break
+					}
 				}
-				variables["ans"] = f
-				f.Print(text)
+				if f != nil {
+					variables["ans"] = f
+					f.Print(text)
+				}
 			}
 			break
 		}

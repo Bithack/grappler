@@ -2,9 +2,13 @@ package main
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
 	"teorem/grappler/caffe"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/gonum/matrix/mat64"
 )
 
 /*
@@ -82,19 +86,57 @@ func (m *caffeMessage) Clone() (f *caffeMessage) {
 	return
 }
 
-func (m *caffeMessage) GetField(s string) (f *caffeMessage) {
+func (m *caffeMessage) GetField(s string) (f *variable) {
 	switch m.T {
+	case "LayerParameter":
+		re := regexp.MustCompile("^parameter\\[(\\d)\\]$")
+		loc := re.FindStringSubmatch(s)
+		if loc == nil {
+			return
+		}
+		i, _ := strconv.Atoi(loc[1])
+		shape := m.LayerParameter.Blobs[i].Shape
+		dims := shape.GetDim()
+		if len(dims) == 1 {
+			f64 := make([]float64, len(m.LayerParameter.Blobs[i].Data))
+			for j := range f64 {
+				f64[j] = float64(m.LayerParameter.Blobs[i].Data[j])
+			}
+			mat := mat64.NewDense(int(dims[0]), 1, f64)
+			f = newVariableFromFloat(mat)
+		}
+		if len(dims) == 4 {
+			for f := 0; f < int(dims[0]); f++ {
+				fmt.Printf("Filter %v:\n", f)
+				di := 0
+				for d := 0; d < int(dims[1]); d++ {
+					for r := 0; r < int(dims[2]); r++ {
+						for c := 0; c < int(dims[3]); c++ {
+							fl := m.LayerParameter.Blobs[i].Data[di]
+							str := strconv.FormatFloat(float64(fl), 'f', 4, 64)
+							fmt.Printf(str + strings.Repeat(" ", 10-len(str)))
+							di++
+						}
+						fmt.Printf("\n")
+					}
+					fmt.Printf("\n")
+				}
+				fmt.Printf("\n")
+			}
+		}
+
 	case "NetParameter":
 		for _, layer := range m.NetParameter.GetLayer() {
 			if layer.GetName() == s {
-				f = new(caffeMessage)
-				f.T = "LayerParameter"
+				cm := new(caffeMessage)
+				cm.T = "LayerParameter"
 				// marshal the layer
 				bts, _ := proto.Marshal(layer)
 				// create a new struct
-				f.LayerParameter = new(caffe.LayerParameter)
+				cm.LayerParameter = new(caffe.LayerParameter)
 				// unmarshal into it
-				proto.Unmarshal(bts, f.LayerParameter)
+				proto.Unmarshal(bts, cm.LayerParameter)
+				f = newVariableFromMessage(cm)
 				break
 			}
 		}
