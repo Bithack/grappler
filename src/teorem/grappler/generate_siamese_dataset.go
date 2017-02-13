@@ -48,7 +48,7 @@ func generateSiameseDataset(dbName string, destW, destH int, todo []string) {
 	// result channels need room for the final results to drop in when we are closing down
 	results := make(chan jobResult, 100)
 
-	noMoreWork := make(chan int)
+	noMoreWork := make(chan int, config.Workers)
 	// set up some workers, reading data from the jobs channel and saving them to the result channel
 	for i := 0; i < config.Workers; i++ {
 		grLog(fmt.Sprintf("Image worker %v started", i))
@@ -58,6 +58,7 @@ func generateSiameseDataset(dbName string, destW, destH int, todo []string) {
 				case <-noMoreWork:
 					grLog(fmt.Sprintf("Image worker %v finished", w))
 					return
+
 				default:
 					j := <-randomImages
 
@@ -162,6 +163,7 @@ func generateSiameseDataset(dbName string, destW, destH int, todo []string) {
 					}
 
 					if err == nil {
+						// this will lock if result channel is full
 						results <- r
 					} else {
 						fmt.Printf("Protobuf marshal failed: %v\n", err)
@@ -196,7 +198,7 @@ func generateSiameseDataset(dbName string, destW, destH int, todo []string) {
 				grLog("Random data loader finished")
 				return
 			default:
-				// if there is room, and it looks like we will need them, add to the random channel
+				// if there is room
 				if len(randomImages) < 100 {
 					var j imageJob
 					j.key, j.value, err = selectedDBs[0].GetRandom()
@@ -244,7 +246,7 @@ func generateSiameseDataset(dbName string, destW, destH int, todo []string) {
 		grLog("Worker go home!")
 		noMoreWork <- 1 // tell the workers to go home
 	}
-	// workers could be locked in writing to a full resultChannel, read some values
+	// workers could be locked in writing to a full result channel, drop some values to make room
 	for i := 0; i < config.Workers; i++ {
 		<-results
 	}

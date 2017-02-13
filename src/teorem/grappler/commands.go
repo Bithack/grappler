@@ -886,7 +886,7 @@ switcher:
 
 		// check here for assignment
 		// currently skips any returnMatrixes, but we could implement multivariable assignment
-		t := strings.Split(text, "=")
+		t := strings.Split(strings.Trim(text, " "), "=")
 		re := regexp.MustCompile("^[a-zA-Z0-9]+$")
 		if len(t) == 2 {
 			t[0] = strings.Trim(t[0], " ")
@@ -907,7 +907,7 @@ switcher:
 		}
 
 		// check for subfield syntax
-		t2 := strings.Split(text, ".")
+		t2 := strings.Split(strings.Trim(text, " "), ".")
 		_, ok := variables[t2[0]]
 		if ok {
 			if len(t2) == 1 {
