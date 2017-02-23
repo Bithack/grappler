@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"teorem/grappler/caffe"
+	"teorem/grappler/vars"
 	"teorem/matlab"
 	"teorem/multimatrix/matchar"
 	"teorem/tinyprompt"
@@ -896,7 +897,7 @@ switcher:
 					fmt.Printf("%v\n", err)
 					break
 				}
-				variables[t[0]] = newVariableFromFloat(r)
+				variables[t[0]] = vars.NewFromFloat(r)
 				matrixes[t[0]] = r
 				printMatrix(t[0])
 				break

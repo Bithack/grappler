@@ -1,14 +1,12 @@
-package main
+package caffe
 
 import (
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
-	"teorem/grappler/caffe"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/gonum/matrix/mat64"
 )
 
 /*
@@ -21,28 +19,28 @@ type Message interface {
 }
 */
 
-type caffeMessage struct {
+type Message struct {
 	T              string
-	Datum          *caffe.Datum
-	NetParameter   *caffe.NetParameter
-	LayerParameter *caffe.LayerParameter
-	BlobProto      *caffe.BlobProto
+	Datum          *Datum
+	NetParameter   *NetParameter
+	LayerParameter *LayerParameter
+	BlobProto      *BlobProto
 }
 
-func (m *caffeMessage) Unmarshal(data []byte, t string) (err error) {
+func (m *Message) Unmarshal(data []byte, t string) (err error) {
 	m.T = t
 	switch t {
 	case "Datum":
-		m.Datum = new(caffe.Datum)
+		m.Datum = new(Datum)
 		err = proto.Unmarshal(data, m.Datum)
 	case "NetParameter":
-		m.NetParameter = new(caffe.NetParameter)
+		m.NetParameter = new(NetParameter)
 		err = proto.Unmarshal(data, m.NetParameter)
 	}
 	return
 }
 
-func (m *caffeMessage) MarshalText() string {
+func (m *Message) MarshalText() string {
 	switch m.T {
 	case "Datum":
 		return proto.MarshalTextString(m.Datum)
@@ -54,44 +52,62 @@ func (m *caffeMessage) MarshalText() string {
 	return ""
 }
 
-func (m *caffeMessage) UnmarshalText(data []byte, t string) (err error) {
+func (m *Message) UnmarshalText(data []byte, t string) (err error) {
 	m.T = t
 	switch t {
 	case "Datum":
-		m.Datum = new(caffe.Datum)
+		m.Datum = new(Datum)
 		err = proto.UnmarshalText(string(data), m.Datum)
 	case "NetParameter":
-		m.NetParameter = new(caffe.NetParameter)
+		m.NetParameter = new(NetParameter)
 		err = proto.UnmarshalText(string(data), m.NetParameter)
 	}
 	return
 }
 
-func (m *caffeMessage) Clone() (f *caffeMessage) {
-	f = new(caffeMessage)
+func New(T string) (f *Message) {
+	f = new(Message)
+	f.T = T
+	switch T {
+	case "NetParameter":
+		f.NetParameter = new(NetParameter)
+	case "LayerParameter":
+		f.LayerParameter = new(LayerParameter)
+	case "Datum":
+		f.Datum = new(Datum)
+	case "BlobProto":
+		f.BlobProto = new(BlobProto)
+	default:
+		panic("Unknown Message type: " + T)
+	}
+	return
+}
+
+func (m *Message) Clone() (f *Message) {
+	f = new(Message)
 	f.T = m.T
 	switch m.T {
 	case "NetParameter":
 		bts, _ := proto.Marshal(m.NetParameter)
-		f.NetParameter = new(caffe.NetParameter)
+		f.NetParameter = new(NetParameter)
 		proto.Unmarshal(bts, f.NetParameter)
 	case "LayerParameter":
 		bts, _ := proto.Marshal(m.LayerParameter)
-		f.LayerParameter = new(caffe.LayerParameter)
+		f.LayerParameter = new(LayerParameter)
 		proto.Unmarshal(bts, f.LayerParameter)
 	case "Datum":
 		bts, _ := proto.Marshal(m.Datum)
-		f.Datum = new(caffe.Datum)
+		f.Datum = new(Datum)
 		proto.Unmarshal(bts, f.Datum)
 	case "BlobProto":
 		bts, _ := proto.Marshal(m.BlobProto)
-		f.BlobProto = new(caffe.BlobProto)
+		f.BlobProto = new(BlobProto)
 		proto.Unmarshal(bts, f.BlobProto)
 	}
 	return
 }
 
-func (m *caffeMessage) GetField(s string) (f *variable) {
+func (m *Message) GetField(s string) (f *Message) {
 	switch m.T {
 	case "LayerParameter":
 		re := regexp.MustCompile("^parameter\\((\\d)\\)$")
@@ -100,36 +116,36 @@ func (m *caffeMessage) GetField(s string) (f *variable) {
 			return
 		}
 		i, _ := strconv.Atoi(loc[1])
-		shape := m.LayerParameter.Blobs[i].Shape
-		dims := shape.GetDim()
-		if len(dims) == 1 {
+		//shape := m.LayerParameter.Blobs[i].Shape
+		//dims := shape.GetDim()
+		/*if len(dims) == 1 {
 			f64 := make([]float64, len(m.LayerParameter.Blobs[i].Data))
 			for j := range f64 {
 				f64[j] = float64(m.LayerParameter.Blobs[i].Data[j])
 			}
 			mat := mat64.NewDense(int(dims[0]), 1, f64)
-			f = newVariableFromFloat(mat)
-		} else {
-			cm := new(caffeMessage)
-			cm.T = "BlobProto"
-			bts, _ := proto.Marshal(m.LayerParameter.Blobs[i])
-			cm.BlobProto = new(caffe.BlobProto)
-			proto.Unmarshal(bts, cm.BlobProto)
-			f = newVariableFromMessage(cm)
+			f = variables.newVariableFromFloat(mat)
 		}
+		*/
+		cm := new(Message)
+		cm.T = "BlobProto"
+		bts, _ := proto.Marshal(m.LayerParameter.Blobs[i])
+		cm.BlobProto = new(BlobProto)
+		proto.Unmarshal(bts, cm.BlobProto)
+		f = cm
 
 	case "NetParameter":
 		for _, layer := range m.NetParameter.GetLayer() {
 			if layer.GetName() == s {
-				cm := new(caffeMessage)
+				cm := new(Message)
 				cm.T = "LayerParameter"
 				// marshal the layer
 				bts, _ := proto.Marshal(layer)
 				// create a new struct
-				cm.LayerParameter = new(caffe.LayerParameter)
+				cm.LayerParameter = new(LayerParameter)
 				// unmarshal into it
 				proto.Unmarshal(bts, cm.LayerParameter)
-				f = newVariableFromMessage(cm)
+				f = cm
 				break
 			}
 		}
@@ -137,7 +153,7 @@ func (m *caffeMessage) GetField(s string) (f *variable) {
 	return
 }
 
-func (m *caffeMessage) GetFields() (s []string) {
+func (m *Message) GetFields() (s []string) {
 	switch m.T {
 	case "NetParameter":
 		for _, layer := range m.NetParameter.GetLayer() {
@@ -154,8 +170,7 @@ func (m *caffeMessage) GetFields() (s []string) {
 // Blob memory is row-major in layout, so the last / rightmost dimension changes fastest.
 // For example, in a 4D blob, the value at index (n, k, h, w) is physically located at index ((n * K + k) * H + h) * W + w.
 
-func (m *caffeMessage) Print() {
-	grLogs("caffeMessage.Print(%v)", m.T)
+func (m *Message) Print() {
 	switch m.T {
 	case "BlobProto":
 		shape := m.BlobProto.Shape
@@ -165,9 +180,9 @@ func (m *caffeMessage) Print() {
 			for j := range f64 {
 				f64[j] = float64(m.BlobProto.Data[j])
 			}
-			mat := mat64.NewDense(int(dims[0]), 1, f64)
-			f := newVariableFromFloat(mat)
-			f.Print("ans")
+			//mat := mat64.NewDense(int(dims[0]), 1, f64)
+			//f := variables.newVariableFromFloat(mat)
+			//f.Print("ans")
 		}
 		if len(dims) == 4 {
 			di := 0

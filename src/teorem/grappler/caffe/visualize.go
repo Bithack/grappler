@@ -1,4 +1,4 @@
-package main
+package caffe
 
 import (
 	"fmt"
@@ -12,7 +12,7 @@ import (
 	"github.com/disintegration/imaging"
 )
 
-func caffeVisualize(m *caffeMessage) {
+func Visualize(m *Message) {
 	switch m.T {
 	case "BlobProto":
 		shape := m.BlobProto.Shape
@@ -59,11 +59,6 @@ func caffeVisualize(m *caffeMessage) {
 
 				fmt.Printf("\r[%v:%v] Scanning kernels...", f+1, int(dims[0]))
 
-				if InterruptRequested {
-					fmt.Printf("canceled\n")
-					return
-				}
-
 				if dims[1] == 3 {
 
 					// assume the filter works on R G B channels
@@ -100,10 +95,6 @@ func caffeVisualize(m *caffeMessage) {
 					px := f % gridW
 					py := f / gridW
 					montage = imaging.Paste(montage, img2, image.Point{X: px*imageSize + padding + px*spacing, Y: py*imageSize + padding + py*spacing})
-					if InterruptRequested {
-						fmt.Printf("canceled\n")
-						return
-					}
 				} else {
 					for d := 0; d <= maxD; d++ {
 						// image location in grid

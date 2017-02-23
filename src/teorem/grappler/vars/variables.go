@@ -1,56 +1,57 @@
-package main
+package vars
 
 import (
 	"fmt"
 	"strings"
+	"teorem/grappler/caffe"
 	"teorem/multimatrix/matchar"
 
 	"github.com/gonum/matrix/mat64"
 )
 
-type variable struct {
+type Variable struct {
 	T           string
 	FloatMatrix *mat64.Dense
 	CharMatrix  *matchar.Matchar
-	Message     *caffeMessage
+	Message     *caffe.Message
 }
 
-func newVariableFromMessage(m *caffeMessage) (v *variable) {
-	v = new(variable)
+func NewFromMessage(m *caffe.Message) (v *Variable) {
+	v = new(Variable)
 	v.T = "Message"
 	v.Message = m
 	return
 }
 
-func newVariableFromFloat(m *mat64.Dense) (v *variable) {
-	v = new(variable)
+func NewFromFloat(m *mat64.Dense) (v *Variable) {
+	v = new(Variable)
 	v.T = "FloatMatrix"
 	v.FloatMatrix = m
 	return
 }
 
-func newVariableFromChar(m *matchar.Matchar) (v *variable) {
-	v = new(variable)
+func NewFromChar(m *matchar.Matchar) (v *Variable) {
+	v = new(Variable)
 	v.T = "CharMatrix"
 	v.CharMatrix = m
 	return
 }
 
-func (v *variable) IsChar() (r bool) {
+func (v *Variable) IsChar() (r bool) {
 	if v.T == "CharMatrix" {
 		r = true
 	}
 	return
 }
 
-func (v *variable) IsFloat() (r bool) {
+func (v *Variable) IsFloat() (r bool) {
 	if v.T == "FloatMatrix" {
 		r = true
 	}
 	return
 }
 
-func (v *variable) CheckDims(r, c int) (ret bool) {
+func (v *Variable) CheckDims(r, c int) (ret bool) {
 	switch v.T {
 	case "FloatMatrix":
 		r2, c2 := v.FloatMatrix.Dims()
@@ -61,14 +62,14 @@ func (v *variable) CheckDims(r, c int) (ret bool) {
 	return
 }
 
-func (v *variable) GetScalar() (s float64) {
+func (v *Variable) GetScalar() (s float64) {
 	switch {
 	case v.IsScalar():
 		s = v.FloatMatrix.At(0, 0)
 	}
 	return
 }
-func (v *variable) IsScalar() (r bool) {
+func (v *Variable) IsScalar() (r bool) {
 	switch {
 	case v.T == "FloatMatrix" && v.CheckDims(1, 1):
 		r = true
@@ -76,14 +77,14 @@ func (v *variable) IsScalar() (r bool) {
 	return
 }
 
-func (v *variable) IsMessage() (r bool) {
+func (v *Variable) IsMessage() (r bool) {
 	if v.T == "Message" {
 		r = true
 	}
 	return
 }
 
-func (v *variable) Type() (s string) {
+func (v *Variable) Type() (s string) {
 	switch v.T {
 	case "FloatMatrix":
 		r, c := v.FloatMatrix.Dims()
@@ -101,10 +102,10 @@ func (v *variable) Type() (s string) {
 	return
 }
 
-func (v *variable) Clone() (v2 *variable) {
+func (v *Variable) Clone() (v2 *Variable) {
 	switch v.T {
 	case "Message":
-		v2 = newVariableFromMessage(v.Message.Clone())
+		v2 = NewFromMessage(v.Message.Clone())
 	case "FloatMatrix":
 		//v2 = newVariableFromFloat(v.FloatMatrix.Clone())
 	case "CharMatrix":
@@ -113,16 +114,15 @@ func (v *variable) Clone() (v2 *variable) {
 	return
 }
 
-func (v *variable) GetField(f string) (v2 *variable) {
-	grLogs("GetField %v.%v", v.T, f)
+func (v *Variable) GetField(f string) (v2 *Variable) {
 	switch v.T {
 	case "Message":
-		v2 = v.Message.GetField(f)
+		v2 = NewFromMessage(v.Message.GetField(f))
 	}
 	return
 }
 
-func (v *variable) GetFields() (s []string) {
+func (v *Variable) GetFields() (s []string) {
 	switch v.T {
 	case "Message":
 		s = v.Message.GetFields()
@@ -130,7 +130,9 @@ func (v *variable) GetFields() (s []string) {
 	return
 }
 
-func (v *variable) Print(name string) {
+var maxPrintWidth = 10
+
+func (v *Variable) Print(name string) {
 	switch v.T {
 	case "Message":
 		v.Message.Print()

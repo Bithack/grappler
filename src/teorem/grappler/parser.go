@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"teorem/grappler/caffe"
+	"teorem/grappler/vars"
 
 	"strconv"
 
@@ -153,7 +155,7 @@ func parseMatrixSubindex(mat *mat64.Dense, args string) (result *mat64.Dense, er
 	return
 }
 
-func checkArguments2(fname string, argv []*variable, types []string) (err error) {
+func checkArguments2(fname string, argv []*vars.Variable, types []string) (err error) {
 	var required int
 	for j := range types {
 		if !strings.HasPrefix(types[j], "optional") {
@@ -186,7 +188,9 @@ func checkArguments2(fname string, argv []*variable, types []string) (err error)
 				return errors.New("Expected message as parameter " + strconv.Itoa(i+1) + " in call to " + fname)
 			}
 		default:
-			return errors.New("Unknown variable type specified in function")
+			if argv[i].Type() != types[i] {
+				return fmt.Errorf("Expected %v as parameter %v in call to %v, got %v", types[i], strconv.Itoa(i+1), fname, argv[i].Type())
+			}
 		}
 	}
 	return
@@ -240,7 +244,7 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 	argv := strings.Split(args, ",")
 
 	// functions workings with other arguments than mat64.Dense can use argv3
-	argv3 := make([]*variable, len(argv))
+	argv3 := make([]*vars.Variable, len(argv))
 	for i := range argv {
 		argv3[i], err = parseExpression2(argv[i])
 		if err != nil {
@@ -260,12 +264,21 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 
 	switch f {
 
+	case "addBatchNorm":
+		if err := checkArguments2("addBatchNorm(M)", argv3, []string{"Message.NetParameter"}); err != nil {
+			return nil, err
+		}
+		newModel := caffe.AddBatchNorm(argv3[0].Message)
+		variables["newCaffemodel"] = vars.NewFromMessage(newModel)
+		variables["newCaffemodel"].Print("newCaffemodel")
+		result = mat64.NewDense(1, 1, []float64{0})
+
 	case "visualize":
 		err := checkArguments2("visualize(blob)", argv3, []string{"message.blob"})
 		if err != nil {
 			return nil, err
 		}
-		caffeVisualize(argv3[0].Message)
+		caffe.Visualize(argv3[0].Message)
 		result = mat64.NewDense(1, 1, []float64{0})
 
 	case "siamese":
@@ -274,8 +287,8 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 			return nil, err
 		}
 		//quick fix until we rewrite parseFunctionCall to return a *variable
-		newModel := caffeCreateSiameseModel(argv3[0].Message)
-		variables["newCaffemodel"] = newVariableFromMessage(newModel)
+		newModel := caffe.CreateSiameseModel(argv3[0].Message)
+		variables["newCaffemodel"] = vars.NewFromMessage(newModel)
 		variables["newCaffemodel"].Print("newCaffemodel")
 		result = mat64.NewDense(1, 1, []float64{0})
 
@@ -821,7 +834,7 @@ func parseColonExpression(expr string) (result *mat64.Dense, err error) {
 }
 
 // parseExpression2 returns a variable wrapper instead of a mat64.Dense
-func parseExpression2(expr string) (result *variable, err error) {
+func parseExpression2(expr string) (result *vars.Variable, err error) {
 	grLog(fmt.Sprintf("parseExpression2 %s", expr))
 	v, ok := variables[expr]
 	if ok {
@@ -831,7 +844,7 @@ func parseExpression2(expr string) (result *variable, err error) {
 	if err != nil {
 		return nil, errors.New("Unknown expression")
 	}
-	return newVariableFromFloat(m), nil
+	return vars.NewFromFloat(m), nil
 }
 
 func parseExpression(expr string) (result *mat64.Dense, err error) {

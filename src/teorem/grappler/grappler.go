@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"teorem/anydb"
+	"teorem/grappler/caffe"
+	"teorem/grappler/vars"
 	"teorem/multimatrix/matchar"
 
 	"github.com/chzyer/readline"
@@ -35,7 +37,7 @@ var lastFloats []float32
 
 var debugMode = false
 
-var variables = make(map[string]*variable)
+var variables = make(map[string]*vars.Variable)
 
 var matrixes = make(map[string]*mat64.Dense)
 var matrixesChar = make(map[string]*matchar.Matchar)
@@ -215,13 +217,13 @@ func open(path string) {
 				grLogs("Error reading file: %v", err)
 				return
 			}
-			var net caffeMessage
+			var net caffe.Message
 			err = net.Unmarshal(data, "NetParameter")
 			if err != nil {
 				grLogs("Error unmarshaling protobuf: %v", err)
 				return
 			}
-			variables["caffemodel"] = newVariableFromMessage(&net)
+			variables["caffemodel"] = vars.NewFromMessage(&net)
 			variables["caffemodel"].Print("caffemodel")
 			return
 
@@ -231,13 +233,13 @@ func open(path string) {
 				grLogs("%v", err)
 				return
 			}
-			var net caffeMessage
+			var net caffe.Message
 			err = net.UnmarshalText(data, "NetParameter")
 			if err != nil {
 				grLogs("%v", err)
 				return
 			}
-			variables["caffemodel"] = newVariableFromMessage(&net)
+			variables["caffemodel"] = vars.NewFromMessage(&net)
 			variables["caffemodel"].Print("caffemodel")
 			return
 		}
