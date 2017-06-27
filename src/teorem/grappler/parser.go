@@ -167,6 +167,10 @@ func checkArguments2(fname string, argv []*vars.Variable, types []string) (err e
 	}
 	for i := range argv {
 		switch types[i] {
+		case "bool", "optional:bool":
+			if !argv[i].IsScalar() || !(argv[i].GetScalar() == 1 || argv[i].GetScalar() == 0) {
+				return errors.New("Expected bool as parameter " + strconv.Itoa(i+1) + " in call to " + fname)
+			}
 		case "dimension", "optional:dimension":
 			if !argv[i].IsScalar() || (argv[i].GetScalar() != 1 && argv[i].GetScalar() != 2) {
 				return errors.New("No such dimension in call to " + fname)
@@ -265,10 +269,14 @@ func parseFunctionCall(f string, args string) (result *mat64.Dense, err error) {
 	switch f {
 
 	case "addBatchNorm":
-		if err := checkArguments2("addBatchNorm(M)", argv3, []string{"Message.NetParameter"}); err != nil {
+		if err := checkArguments2("addBatchNorm(M, [1])", argv3, []string{"Message.NetParameter", "optional:bool"}); err != nil {
 			return nil, err
 		}
-		newModel := caffe.AddBatchNorm(argv3[0].Message)
+		before := true
+		if len(argv3) > 1 {
+			before = argv3[1].GetBool()
+		}
+		newModel := caffe.AddBatchNorm(argv3[0].Message, before)
 		variables["newCaffemodel"] = vars.NewFromMessage(newModel)
 		variables["newCaffemodel"].Print("newCaffemodel")
 		result = mat64.NewDense(1, 1, []float64{0})

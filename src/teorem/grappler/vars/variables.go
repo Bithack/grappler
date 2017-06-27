@@ -62,6 +62,14 @@ func (v *Variable) CheckDims(r, c int) (ret bool) {
 	return
 }
 
+func (v *Variable) GetBool() (b bool) {
+	switch {
+	case v.IsScalar():
+		return v.FloatMatrix.At(0, 0) != 0
+	}
+	return
+}
+
 func (v *Variable) GetScalar() (s float64) {
 	switch {
 	case v.IsScalar():
@@ -69,6 +77,7 @@ func (v *Variable) GetScalar() (s float64) {
 	}
 	return
 }
+
 func (v *Variable) IsScalar() (r bool) {
 	switch {
 	case v.T == "FloatMatrix" && v.CheckDims(1, 1):

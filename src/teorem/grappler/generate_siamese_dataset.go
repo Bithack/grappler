@@ -6,6 +6,7 @@ import (
 	"image"
 	"math/rand"
 	"os"
+	"sync/atomic"
 	"teorem/grappler/caffe"
 	"time"
 
@@ -21,9 +22,6 @@ func generateSiameseDataset(dbName string, destW, destH int, todo []string) {
 		max = int(selectedDBs[0].Entries())
 	}
 
-	fmt.Printf("Will generate LMDB database \"%v\" with siamese image blocks of size %v x %v\n", dbName, destW, destH)
-	fmt.Printf("Working...\n")
-
 	start := time.Now()
 
 	// creates db
@@ -32,6 +30,21 @@ func generateSiameseDataset(dbName string, destW, destH int, todo []string) {
 		fmt.Printf("Could not create DB: %v\n", err)
 		return
 	}
+
+	logFile, err := os.Create(dbName + ".log.txt")
+	if err != nil {
+		fmt.Printf("Could not create logfile: %v\n", err)
+		return
+	}
+	defer logFile.Close()
+
+	grLogsf(logFile, "Will generate LMDB database \"%v\" with siamese image blocks of size %v x %v\n", dbName, destW, destH)
+	if config.Generate.CropAll {
+		grLogsf(logFile, "All images will be randomly cropped by 0-%v%%\n", 100-config.Generate.PercentCropping)
+	}
+	grLogsf(logFile, "Operations: %v\n", todo)
+	grLogsf(logFile, "Number of operations on each image: %v\n", config.Generate.OperationCount)
+	fmt.Printf("Working...\n")
 
 	type imageJob struct {
 		key   []byte
@@ -44,6 +57,17 @@ func generateSiameseDataset(dbName string, destW, destH int, todo []string) {
 		value      []byte
 		meanValues [6]float64
 	}
+
+	// stat counters
+	var (
+		cr int32
+		bl int32
+		sh int32
+		co int32
+		ga int32
+		no int32
+		br int32
+	)
 
 	// result channels need room for the final results to drop in when we are closing down
 	results := make(chan jobResult, 100)
@@ -79,7 +103,6 @@ func generateSiameseDataset(dbName string, destW, destH int, todo []string) {
 					case 0:
 						// DISSIMILAR PAIR
 						// read another one from randomImages
-						// the random image could be the same as img! with a large dataset it is probably acceptably
 						for {
 							k := <-randomImages
 							dst, err = imaging.Decode(bytes.NewReader(k.value))
@@ -90,38 +113,61 @@ func generateSiameseDataset(dbName string, destW, destH int, todo []string) {
 								}
 								break
 							}
+							if config.Generate.CropAll {
+								dst = crop(dst)
+							}
 						}
 
 					case 1:
 						// SIMILAR PAIR
-						// select one random operation from the todo
-						op := rand.Intn(len(todo))
-						w := img.Bounds().Dx()
-						h := img.Bounds().Dy()
-						switch todo[op] {
-						case "cropping", "croppings":
-							//max 80% cropping
-							pc := float64(config.Generate.PercentCropping) / 100
-							nw := int(pc*float64(w) + rand.Float64()*(1-pc)*float64(w))
-							nh := int(pc*float64(h) + rand.Float64()*(1-pc)*float64(h))
-							x := rand.Intn(w - nw)
-							y := rand.Intn(h - nh)
-							r := image.Rect(x, y, x+nw, y+nh)
-							dst = imaging.Crop(img, r)
-						case "brightness":
-							dst = imaging.AdjustBrightness(img, float64(rand.Intn(100)-50))
-						case "sharpness":
-							dst = imaging.Sharpen(img, float64(rand.Intn(6)))
-						case "blur":
-							dst = imaging.Blur(img, float64(rand.Intn(6)))
-						case "nothing", "none", "noop":
-							dst = imaging.Clone(img)
-						default:
-							fmt.Printf("Unknown operation!\n")
-							return
+
+						dst = imaging.Clone(img)
+
+						if config.Generate.CropAll {
+							// dst is cropped before other operations...
+							dst = crop(dst)
+						}
+
+						for j := 0; j < config.Generate.OperationCount; j++ {
+
+							// select one random operation from the todo list
+							op := rand.Intn(len(todo))
+
+							switch todo[op] {
+							case "cropping", "croppings", "crop":
+								atomic.AddInt32(&cr, 1)
+								dst = crop(dst)
+							case "brightness":
+								atomic.AddInt32(&br, 1)
+								dst = imaging.AdjustBrightness(dst, float64(rand.Intn(100)-50))
+							case "sharpness":
+								atomic.AddInt32(&sh, 1)
+								dst = imaging.Sharpen(dst, float64(rand.Intn(6)))
+							case "gamma":
+								atomic.AddInt32(&ga, 1)
+								dst = imaging.AdjustGamma(dst, 1.5-rand.Float64()) // gamma 0.5 to 1.5
+							case "contrast":
+								atomic.AddInt32(&co, 1)
+								dst = imaging.AdjustContrast(dst, float64(rand.Intn(100)-50)) // contrast -50 to 50
+							case "blur":
+								atomic.AddInt32(&bl, 1)
+								dst = imaging.Blur(dst, 1.0)
+							case "nothing", "none", "noop":
+								atomic.AddInt32(&no, 1)
+								dst = imaging.Clone(dst)
+							default:
+								fmt.Printf("Unknown operation! Available: crop, brightness, sharpness, gamma, contrast, blur, none\n")
+								return
+							}
 						}
 					}
 
+					if config.Generate.CropAll {
+						// crop the first image (original) in the pair
+						img = crop(img)
+					}
+
+					// now resize to final desination
 					img = imaging.Resize(img, destW, destH, imaging.Lanczos)
 					dst = imaging.Resize(dst, destW, destH, imaging.Lanczos)
 
@@ -246,17 +292,34 @@ func generateSiameseDataset(dbName string, destW, destH int, todo []string) {
 		grLog("Worker go home!")
 		noMoreWork <- 1 // tell the workers to go home
 	}
-	// workers could be locked in writing to a full result channel, drop some values to make room
+
+	// flush result channel
 	for i := 0; i < config.Workers; i++ {
-		<-results
+		if len(results) > 0 {
+			<-results
+		}
 	}
 
 	stop := time.Since(start)
 	fmt.Printf("\nDone in %.4v\n", stop)
 
+	grLogsf(logFile, "Operation stats:\ncrops: %v\nblur: %v\nsharpness: %v\ncontrast: %v\ngamma: %v\nbrightness: %v\nnoop: %v\n", cr, bl, sh, co, ga, br, no)
+
 	// print out mean values
-	fmt.Printf("\nImage mean values:\n")
+	grLogsf(logFile, "\nImage mean values:\n")
 	for i := 0; i < 3; i++ {
-		fmt.Printf("Channel %v: %f\n", i, meanSums[i]/float64(wCount*2))
+		grLogsf(logFile, "Channel %v: %f\n", i, meanSums[i]/float64(wCount*2))
 	}
+}
+
+func crop(img image.Image) image.Image {
+	w := img.Bounds().Dx()
+	h := img.Bounds().Dy()
+	pc := float64(config.Generate.PercentCropping) / 100
+	nw := int(pc*float64(w) + rand.Float64()*(1-pc)*float64(w))
+	nh := int(pc*float64(h) + rand.Float64()*(1-pc)*float64(h))
+	x := rand.Intn(w - nw)
+	y := rand.Intn(h - nh)
+	r := image.Rect(x, y, x+nw, y+nh)
+	return imaging.Crop(img, r)
 }

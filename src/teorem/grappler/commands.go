@@ -406,8 +406,10 @@ switcher:
 		selectedDBs[0].Reset()
 
 	case "generate":
-		if len(parts) != 7 || parts[1] != "siamese" || parts[2] != "dataset" {
-			fmt.Printf("Usage:\nGENERATE SIAMESE DATASET <db> (<width>,<height>) with cropping[,brightness][,sharpness][,blur]\n")
+		if len(parts) < 5 || parts[1] != "siamese" || parts[2] != "dataset" {
+			fmt.Printf("Usage:\nGENERATE SIAMESE DATASET <db> (<width>,<height>) [with operation,operation,...]\n")
+			fmt.Printf("Available operations: brightness, contrast, gamma, blur, sharpness, crop\n")
+			fmt.Printf("Default: %v\n", config.Generate.DefaultOperations)
 			return
 		}
 		if len(selectedDBs) != 1 {
@@ -429,7 +431,10 @@ switcher:
 			fmt.Printf("Malformed integer\n")
 			return
 		}
-		todo := strings.Split(parts[6], ",")
+		todo := config.Generate.DefaultOperations
+		if len(parts) == 7 && parts[5] == "with" {
+			todo = strings.Split(parts[6], ",")
+		}
 		generateSiameseDataset(parts[3], destW, destH, todo)
 
 	case "compute":
@@ -442,6 +447,17 @@ switcher:
 			break
 		}
 		computeImageMean(selectedDBs[0])
+
+	case "browse":
+		if len(parts) != 1 {
+			fmt.Printf("usage: browse\n")
+			break
+		}
+		if len(selectedDBs) != 1 {
+			fmt.Printf("Select one db first\n")
+			break
+		}
+		launchBrowser(selectedDBs[0])
 
 	case "caffe":
 		if len(parts) < 2 {

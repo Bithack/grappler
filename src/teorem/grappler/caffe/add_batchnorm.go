@@ -2,7 +2,11 @@ package caffe
 
 import "github.com/golang/protobuf/proto"
 
-func AddBatchNorm(model *Message) (newModel *Message) {
+// https://github.com/gcr/torch-residual-networks/issues/5
+
+// AddBatchNorm adds BatchNorms layers to a caffemodel. If before is set to true it adds it before every conv layer,
+// otherwise after.
+func AddBatchNorm(model *Message, before bool) (newModel *Message) {
 
 	newModel = New("NetParameter")
 	newModel.NetParameter = new(NetParameter)
@@ -11,7 +15,10 @@ func AddBatchNorm(model *Message) (newModel *Message) {
 	for _, layer := range layers {
 
 		newLayer := proto.Clone(layer).(*LayerParameter)
-		newModel.NetParameter.Layer = append(newModel.NetParameter.Layer, newLayer)
+
+		if !before {
+			newModel.NetParameter.Layer = append(newModel.NetParameter.Layer, newLayer)
+		}
 
 		switch *layer.Type {
 		case "Convolution":
@@ -23,6 +30,10 @@ func AddBatchNorm(model *Message) (newModel *Message) {
 			bn.Top = []string{layer.Top[0]}
 			bn.BatchNormParam = new(BatchNormParameter)
 			newModel.NetParameter.Layer = append(newModel.NetParameter.Layer, &bn)
+		}
+
+		if before {
+			newModel.NetParameter.Layer = append(newModel.NetParameter.Layer, newLayer)
 		}
 	}
 	return

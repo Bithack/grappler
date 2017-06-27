@@ -43,7 +43,10 @@ var matrixes = make(map[string]*mat64.Dense)
 var matrixesChar = make(map[string]*matchar.Matchar)
 
 type generateConfig struct {
-	PercentCropping int
+	PercentCropping   int      `json:"parcent_cropping"`
+	CropAll           bool     `json:"crop_all"`
+	OperationCount    int      `json:"operation_count"`
+	DefaultOperations []string `json:"default_operations"`
 }
 
 type grapplerConfig struct {
@@ -57,6 +60,9 @@ var config grapplerConfig
 
 func setDefaultConfig() {
 	config.Generate.PercentCropping = 80
+	config.Generate.OperationCount = 1
+	config.Generate.CropAll = true
+	config.Generate.DefaultOperations = []string{"brightness", "contrast", "gamma", "blur", "sharpness"}
 	// the number of workers to use for the heavy stuff (like generate dataset)
 	// defaults to number of logical cpus
 	config.Workers = runtime.NumCPU()
@@ -112,8 +118,12 @@ func main() {
 		os.MkdirAll(usr.HomeDir+"/.config/grappler/", 0700)
 		ioutil.WriteFile(configFile, []byte("{}"), 0644)
 	} else {
-		json.Unmarshal(file, &config)
-		fmt.Printf("Config read from %v\n", configFile)
+		err = json.Unmarshal(file, &config)
+		if err != nil {
+			fmt.Printf("Error parsing config %v: %v\n", configFile, err)
+		} else {
+			fmt.Printf("Config read from %v\n", configFile)
+		}
 	}
 
 	fmt.Printf("Interactive mode. Type \"help\" for commands.\n")
@@ -138,10 +148,15 @@ func main() {
 		InterruptRequested = false
 
 		text, _ = l.Readline()
+
+		if text != "q" && text != "quit" {
+			l.SaveHistory(text)
+		}
+
 		if !eval(text) {
 			break
 		}
-		l.SaveHistory(text)
+
 	}
 
 	//close all open connections
@@ -271,6 +286,11 @@ func grLog(message string) {
 	if debugMode {
 		fmt.Printf("%v\n", message)
 	}
+}
+
+func grLogsf(f *os.File, s string, args ...interface{}) {
+	f.WriteString(fmt.Sprintf(s, args...))
+	fmt.Printf(s, args...)
 }
 
 func grLogs(s string, a ...interface{}) {
